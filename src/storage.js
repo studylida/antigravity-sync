@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { exportSummaries, importAndMergeSummaries } from './db.js';
+import { expandPaths } from './path_utils.js';
 
 /**
  * Creates an emergency rollback snapshot of local Antigravity state.
@@ -75,9 +77,9 @@ export function pruneSnapshots(backupBaseDir, maxKeep = 10) {
 }
 
 /**
- * Recursively copies a directory.
+ * Recursively copies a directory with optional text transformation for transcripts.
  */
-export function copyDirRecursive(src, dest) {
+export function copyDirRecursive(src, dest, transformFn = null) {
   if (!fs.existsSync(src)) return;
   fs.mkdirSync(dest, { recursive: true });
   const entries = fs.readdirSync(src, { withFileTypes: true });
@@ -87,9 +89,8 @@ export function copyDirRecursive(src, dest) {
     const destPath = path.join(dest, entry.name);
 
     if (entry.isDirectory()) {
-      copyDirRecursive(srcPath, destPath);
+      copyDirRecursive(srcPath, destPath, transformFn);
     } else {
-      // Only copy if destination doesn't exist or size/mtime differs
       let shouldCopy = true;
       if (fs.existsSync(destPath)) {
         const srcStat = fs.statSync(srcPath);
@@ -99,7 +100,17 @@ export function copyDirRecursive(src, dest) {
         }
       }
       if (shouldCopy) {
-        fs.copyFileSync(srcPath, destPath);
+        if (transformFn && (entry.name.endsWith('.jsonl') || entry.name.endsWith('.json'))) {
+          try {
+            const raw = fs.readFileSync(srcPath, 'utf8');
+            const transformed = transformFn(raw);
+            fs.writeFileSync(destPath, transformed, 'utf8');
+          } catch {
+            fs.copyFileSync(srcPath, destPath);
+          }
+        } else {
+          fs.copyFileSync(srcPath, destPath);
+        }
       }
     }
   }
@@ -192,17 +203,24 @@ export function importFromSyncDir(syncDir, antigravityDir, options = {}) {
     }
   }
 
-  // 3. Copy brain directories
+  // 3. Copy brain directories with dynamic path adaptation
   const syncBrain = path.join(syncDir, 'brain');
   const localBrain = path.join(antigravityDir, 'brain');
   fs.mkdirSync(localBrain, { recursive: true });
+
+  const transformFn = (content) => expandPaths(
+    content,
+    options.targetHome || os.homedir(),
+    indexData.sourceHomeDir || '',
+    options.pathMappings || {}
+  );
 
   let copiedBrainCount = 0;
   if (fs.existsSync(syncBrain)) {
     const dirs = fs.readdirSync(syncBrain, { withFileTypes: true });
     for (const d of dirs) {
       if (d.isDirectory()) {
-        copyDirRecursive(path.join(syncBrain, d.name), path.join(localBrain, d.name));
+        copyDirRecursive(path.join(syncBrain, d.name), path.join(localBrain, d.name), transformFn);
         copiedBrainCount++;
       }
     }

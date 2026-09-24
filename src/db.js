@@ -1,6 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { templatizePaths, expandPaths } from './path_utils.js';
 
 export const CONVERSATION_SUMMARIES_SCHEMA = `
 CREATE TABLE IF NOT EXISTS \`conversation_summaries\` (
@@ -45,10 +47,11 @@ export function ensureSummariesDb(dbPath) {
 /**
  * Exports all conversations from conversation_summaries.db to a serializable JS object.
  */
-export function exportSummaries(dbPath) {
+export function exportSummaries(dbPath, currentHome = os.homedir()) {
   if (!fs.existsSync(dbPath)) {
     return {
       version: 1,
+      sourceHomeDir: currentHome,
       exportedAt: new Date().toISOString(),
       conversations: []
     };
@@ -58,12 +61,19 @@ export function exportSummaries(dbPath) {
   try {
     const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_summaries'").get();
     if (!tableExists) {
-      return { version: 1, exportedAt: new Date().toISOString(), conversations: [] };
+      return { version: 1, sourceHomeDir: currentHome, exportedAt: new Date().toISOString(), conversations: [] };
     }
 
     const rows = db.prepare("SELECT * FROM conversation_summaries ORDER BY last_modified_time DESC").all();
     const conversations = rows.map(r => {
       const item = { ...r };
+      // Normalize absolute workspace and project paths to portable placeholders
+      if (item.workspace_uris) {
+        item.workspace_uris = templatizePaths(item.workspace_uris, currentHome);
+      }
+      if (item.project_id) {
+        item.project_id = templatizePaths(item.project_id, currentHome);
+      }
       if (item.raw_summary instanceof Uint8Array || Buffer.isBuffer(item.raw_summary)) {
         item.raw_summary = Buffer.from(item.raw_summary).toString('base64');
       }
@@ -72,6 +82,7 @@ export function exportSummaries(dbPath) {
 
     return {
       version: 1,
+      sourceHomeDir: currentHome,
       exportedAt: new Date().toISOString(),
       conversations
     };
@@ -84,7 +95,7 @@ export function exportSummaries(dbPath) {
  * Merges conversations from an exported index into local conversation_summaries.db.
  * @param {string} dbPath - Path to local conversation_summaries.db
  * @param {object} indexData - Exported index object containing `conversations` array
- * @param {object} options - Options: { pathMapping: { from: string, to: string } }
+ * @param {object} options - Options: { targetHome: string, pathMappings: object }
  * @returns {{ added: number, updated: number, skipped: number, total: number }}
  */
 export function importAndMergeSummaries(dbPath, indexData, options = {}) {
@@ -94,6 +105,9 @@ export function importAndMergeSummaries(dbPath, indexData, options = {}) {
   let added = 0;
   let updated = 0;
   let skipped = 0;
+  const targetHome = options.targetHome || os.homedir();
+  const sourceHome = indexData.sourceHomeDir || '';
+  const customMappings = options.pathMappings || {};
 
   try {
     const existingRows = db.prepare("SELECT conversation_id, last_modified_time, step_count FROM conversation_summaries").all();
@@ -118,17 +132,16 @@ export function importAndMergeSummaries(dbPath, indexData, options = {}) {
     db.exec('BEGIN TRANSACTION');
 
     for (const conv of conversations) {
-      let workspaceUris = conv.workspace_uris || '';
-      if (options.pathMapping && options.pathMapping.from && options.pathMapping.to) {
-        workspaceUris = workspaceUris.replaceAll(options.pathMapping.from, options.pathMapping.to);
-      }
+      const adaptedWorkspaceUris = expandPaths(conv.workspace_uris || '', targetHome, sourceHome, customMappings);
+      const adaptedProjectId = expandPaths(conv.project_id || '', targetHome, sourceHome, customMappings);
 
       const existing = existingMap.get(conv.conversation_id);
 
       if (!existing) {
         // Insert new conversation
         const values = columns.map(c => {
-          if (c === 'workspace_uris') return workspaceUris;
+          if (c === 'workspace_uris') return adaptedWorkspaceUris;
+          if (c === 'project_id') return adaptedProjectId;
           if (c === 'raw_summary' && typeof conv[c] === 'string') {
             return Buffer.from(conv[c], 'base64');
           }
@@ -144,7 +157,8 @@ export function importAndMergeSummaries(dbPath, indexData, options = {}) {
         if (remoteTime > localTime || (conv.step_count || 0) > (existing.step_count || 0)) {
           const updateCols = columns.filter(c => c !== 'conversation_id');
           const values = updateCols.map(c => {
-            if (c === 'workspace_uris') return workspaceUris;
+            if (c === 'workspace_uris') return adaptedWorkspaceUris;
+            if (c === 'project_id') return adaptedProjectId;
             if (c === 'raw_summary' && typeof conv[c] === 'string') {
               return Buffer.from(conv[c], 'base64');
             }
