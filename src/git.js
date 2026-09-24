@@ -2,11 +2,13 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-function runGit(args, cwd) {
+function runGit(args, cwd, timeout = 45000) {
   try {
     return execFileSync('git', args, {
       cwd,
       encoding: 'utf8',
+      timeout,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
       stdio: ['ignore', 'pipe', 'pipe']
     }).trim();
   } catch (err) {
