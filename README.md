@@ -1,5 +1,6 @@
 # 🌌 Antigravity Sync (`agy-sync`)
 
+[![npm version](https://img.shields.io/npm/v/antigravity-sync.svg)](https://www.npmjs.com/package/antigravity-sync)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 [![Node: >=20](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg)](https://nodejs.org/)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)](#)
@@ -30,12 +31,24 @@ Google Antigravity는 로컬 파일 시스템(`~/.gemini/antigravity`)에 대화
   `conversation_summaries.db`를 Git 친화적인 텍스트(`conversations_index.json`)로 직렬화하여 관리합니다. A 컴퓨터의 대화와 B 컴퓨터의 대화가 서로 지워지지 않고 합집합(Union)으로 안전하게 병합됩니다.
 * ⚡ **Zero External Dependencies (무의존성)**:
   Node.js v20+ 내장 모듈(`node:sqlite`, `node:fs`, `node:child_process`)만으로 작성되어, 무거운 빌드 도구나 외부 패키지 설치 없이 `npx`로 즉시 실행할 수 있습니다.
+* 📂 **스마트 프로젝트 탐색기 (Smart Project Locator)**:
+  컴퓨터마다 소스코드 경로가 달라도(`C:\git\my-app` vs `~/projects/my-app`), 로컬 폴더를 자동 탐색하고 `git remote origin` 주소를 대조 검증하여 사용자 확인(`Y/n`) 후 Antigravity 프로젝트를 안전하게 연결합니다.
+* 🌐 **사용자 홈 경로 가상화 (`{{USER_HOME}}`)**:
+  운영체제나 사용자 계정명(`C:\Users\dam` vs `/Users/work`)이 달라도 파일 경로 및 `transcript.jsonl` 내부의 클릭 링크를 대상 기기에 맞게 자동 치환합니다.
 * 🛡️ **작업 전 자동 스냅샷 (Auto-Rollback)**:
   동기화(`pull`)나 복원 작업을 시작하기 전, 현재 로컬 상태를 타임스탬프 스냅샷으로 자동 백업합니다. 만약의 경우 `agy-sync restore` 명령어로 1초 만에 원복할 수 있습니다.
 * 🖥️ **크로스 플랫폼 & 프로세스 보호**:
   Windows, macOS, Linux를 자동 감지하며, 동기화 중 Antigravity 앱 실행 여부를 체크하여 데이터 오염을 사전에 방지합니다.
 * ☁️ **다양한 저장소 지원**:
   GitHub/GitLab의 **비공개(Private) 저장소** 또는 Google Drive, OneDrive, Dropbox, 로컬 공유 폴더(NAS)를 백엔드로 사용할 수 있습니다.
+
+---
+
+## 📋 사전 준비 (Prerequisites)
+
+1. **Node.js (v20.0.0 이상)** 설치
+2. **동기화용 비공개(Private) 저장소 준비**:
+   * 대화 내역 및 브레인 파일에는 사내 코드나 개인정보가 포함될 수 있으므로, 동기화 백업용으로 쓸 **본인만의 비공개(Private) GitHub 레포지토리**를 미리 하나 생성해 둡니다 (예: `my-antigravity-backup`).
 
 ---
 
