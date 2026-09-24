@@ -5,3 +5,6 @@ Thumbs.db
 tests/temp_*
 tests/test_sandbox/
 tests/test_git_sandbox/
+
+# 개인 학습 전용 폴더
+study/
