@@ -1,0 +1,27 @@
+{
+  "name": "antigravity-sync",
+  "version": "1.0.0",
+  "description": "Seamless bidirectional conversation sync and backup for Google Antigravity across multiple machines.",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "agy-sync": "./bin/agy-sync.js",
+    "antigravity-sync": "./bin/agy-sync.js"
+  },
+  "scripts": {
+    "test": "node --test tests/test_db_unit.js tests/test_git_unit.js tests/test_storage_unit.js"
+  },
+  "keywords": [
+    "antigravity",
+    "backup",
+    "sync",
+    "ai",
+    "gemini",
+    "chat-history"
+  ],
+  "author": "studylida",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

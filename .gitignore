@@ -1,0 +1,7 @@
+node_modules/
+.DS_Store
+Thumbs.db
+*.log
+tests/temp_*
+tests/test_sandbox/
+tests/test_git_sandbox/
