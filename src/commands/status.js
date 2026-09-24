@@ -27,6 +27,11 @@ export async function commandStatus() {
   }
   console.log(`[로컬 데이터]   경로: ${cfg.antigravityDir}`);
   console.log(`                보유 대화 수: ${localConvs.length}개`);
+  let localProjects = [];
+  if (cfg.projectsDir && fs.existsSync(cfg.projectsDir)) {
+    localProjects = fs.readdirSync(cfg.projectsDir).filter(f => f.endsWith('.json'));
+  }
+  console.log(`                등록된 프로젝트: ${localProjects.length}개`);
 
   // 3. Sync repo info
   console.log(`[동기화 저장소] 경로: ${cfg.syncDir}`);
@@ -41,6 +46,12 @@ export async function commandStatus() {
     }
   }
   console.log(`                저장소 대화 수: ${remoteConvs.length}개`);
+  let remoteProjects = [];
+  const syncProjectsDir = path.join(cfg.syncDir, 'projects');
+  if (fs.existsSync(syncProjectsDir)) {
+    remoteProjects = fs.readdirSync(syncProjectsDir).filter(f => f.endsWith('.json'));
+  }
+  console.log(`                저장소 프로젝트: ${remoteProjects.length}개`);
 
   if (isGitRepo(cfg.syncDir)) {
     const gitStatus = getGitStatus(cfg.syncDir);

@@ -24,11 +24,17 @@ export function getDefaultBackupDir() {
   return path.join(getConfigDir(), 'backups');
 }
 
+export function getDefaultProjectsDir() {
+  const home = process.env.USERPROFILE || os.homedir();
+  return path.join(home, '.gemini', 'config', 'projects');
+}
+
 export function loadConfig() {
   const configPath = getConfigPath();
   if (!fs.existsSync(configPath)) {
     return {
       antigravityDir: getDefaultAntigravityDir(),
+      projectsDir: getDefaultProjectsDir(),
       syncDir: getDefaultSyncDir(),
       backupDir: getDefaultBackupDir(),
       gitRemote: '',
@@ -41,6 +47,7 @@ export function loadConfig() {
     const data = JSON.parse(raw);
     return {
       antigravityDir: data.antigravityDir || getDefaultAntigravityDir(),
+      projectsDir: data.projectsDir || getDefaultProjectsDir(),
       syncDir: data.syncDir || getDefaultSyncDir(),
       backupDir: data.backupDir || getDefaultBackupDir(),
       gitRemote: data.gitRemote || '',
@@ -51,6 +58,7 @@ export function loadConfig() {
     console.error('[Config] Failed to read config file:', err.message);
     return {
       antigravityDir: getDefaultAntigravityDir(),
+      projectsDir: getDefaultProjectsDir(),
       syncDir: getDefaultSyncDir(),
       backupDir: getDefaultBackupDir(),
       gitRemote: '',

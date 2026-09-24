@@ -26,11 +26,12 @@ export async function commandPush(options = {}) {
   }
 
   // 3. Export to sync directory
-  console.log(`📦 대화 인덱스 및 세션 데이터 내보내는 중 -> ${cfg.syncDir}`);
-  const result = exportToSyncDir(cfg.antigravityDir, cfg.syncDir);
+  console.log(`📦 대화 인덱스, 세션 데이터 및 프로젝트 내보내는 중 -> ${cfg.syncDir}`);
+  const result = exportToSyncDir(cfg.antigravityDir, cfg.syncDir, cfg.projectsDir);
   console.log(`   - 대화 인덱스: ${result.indexCount}개`);
   console.log(`   - 세션 데이터베이스(.db): ${result.convCount}개`);
   console.log(`   - 에이전트 브레인 디렉터리: ${result.brainCount}개`);
+  console.log(`   - 프로젝트 메타데이터: ${result.projectCount}개`);
 
   // 4. Git commit and push if applicable
   if (isGitRepo(cfg.syncDir)) {

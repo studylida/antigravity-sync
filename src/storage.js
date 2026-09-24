@@ -2,12 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { exportSummaries, importAndMergeSummaries } from './db.js';
-import { expandPaths } from './path_utils.js';
+import { expandPaths, templatizePaths } from './path_utils.js';
 
 /**
  * Creates an emergency rollback snapshot of local Antigravity state.
  */
-export function createSnapshot(antigravityDir, backupBaseDir) {
+export function createSnapshot(antigravityDir, backupBaseDir, projectsDir = '') {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const snapshotDir = path.join(backupBaseDir, `snapshot_${timestamp}`);
   fs.mkdirSync(snapshotDir, { recursive: true });
@@ -33,6 +33,21 @@ export function createSnapshot(antigravityDir, backupBaseDir) {
           fs.copyFileSync(path.join(convDir, file), path.join(destConv, file));
         } catch (err) {
           console.warn(`[Snapshot] Warning copying ${file}: ${err.message}`);
+        }
+      }
+    }
+  }
+
+  // Backup projects dir if available
+  if (projectsDir && fs.existsSync(projectsDir)) {
+    const destProjects = path.join(snapshotDir, 'projects');
+    fs.mkdirSync(destProjects, { recursive: true });
+    for (const file of fs.readdirSync(projectsDir)) {
+      if (file.endsWith('.json')) {
+        try {
+          fs.copyFileSync(path.join(projectsDir, file), path.join(destProjects, file));
+        } catch (err) {
+          console.warn(`[Snapshot] Warning copying project ${file}: ${err.message}`);
         }
       }
     }
@@ -119,12 +134,14 @@ export function copyDirRecursive(src, dest, transformFn = null) {
 /**
  * Exports Antigravity state into the sync target folder.
  */
-export function exportToSyncDir(antigravityDir, syncDir) {
+export function exportToSyncDir(antigravityDir, syncDir, projectsDir = '') {
   fs.mkdirSync(syncDir, { recursive: true });
   const syncConversations = path.join(syncDir, 'conversations');
   const syncBrain = path.join(syncDir, 'brain');
+  const syncProjects = path.join(syncDir, 'projects');
   fs.mkdirSync(syncConversations, { recursive: true });
   fs.mkdirSync(syncBrain, { recursive: true });
+  fs.mkdirSync(syncProjects, { recursive: true });
 
   // 1. Export conversation_summaries.db to conversations_index.json
   const localSummaryDb = path.join(antigravityDir, 'conversation_summaries.db');
@@ -160,17 +177,32 @@ export function exportToSyncDir(antigravityDir, syncDir) {
     }
   }
 
+  // 4. Export project metadata with path templatization
+  let projectCount = 0;
+  if (projectsDir && fs.existsSync(projectsDir)) {
+    const pFiles = fs.readdirSync(projectsDir);
+    for (const f of pFiles) {
+      if (f.endsWith('.json')) {
+        const raw = fs.readFileSync(path.join(projectsDir, f), 'utf8');
+        const templatized = templatizePaths(raw, os.homedir());
+        fs.writeFileSync(path.join(syncProjects, f), templatized, 'utf8');
+        projectCount++;
+      }
+    }
+  }
+
   return {
     indexCount: indexData.conversations.length,
     convCount,
-    brainCount
+    brainCount,
+    projectCount
   };
 }
 
 /**
- * Imports and merges conversations from sync directory into local Antigravity.
+ * Imports and merges conversations and projects from sync directory into local Antigravity.
  */
-export function importFromSyncDir(syncDir, antigravityDir, options = {}) {
+export function importFromSyncDir(syncDir, antigravityDir, projectsDir = '', options = {}) {
   const indexJsonPath = path.join(syncDir, 'conversations_index.json');
   if (!fs.existsSync(indexJsonPath)) {
     throw new Error(`Sync index not found at ${indexJsonPath}. Has a push been executed?`);
@@ -226,9 +258,31 @@ export function importFromSyncDir(syncDir, antigravityDir, options = {}) {
     }
   }
 
+  // 4. Copy and adapt project definitions
+  const syncProjects = path.join(syncDir, 'projects');
+  let copiedProjectCount = 0;
+  if (projectsDir && fs.existsSync(syncProjects)) {
+    fs.mkdirSync(projectsDir, { recursive: true });
+    const pFiles = fs.readdirSync(syncProjects);
+    for (const f of pFiles) {
+      if (f.endsWith('.json')) {
+        const raw = fs.readFileSync(path.join(syncProjects, f), 'utf8');
+        const expanded = expandPaths(
+          raw,
+          options.targetHome || os.homedir(),
+          indexData.sourceHomeDir || '',
+          options.pathMappings || {}
+        );
+        fs.writeFileSync(path.join(projectsDir, f), expanded, 'utf8');
+        copiedProjectCount++;
+      }
+    }
+  }
+
   return {
     mergeStats,
     copiedDbCount,
-    copiedBrainCount
+    copiedBrainCount,
+    copiedProjectCount
   };
 }

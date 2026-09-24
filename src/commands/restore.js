@@ -49,5 +49,15 @@ export async function commandRestore(snapshotName = '', options = {}) {
     console.log('   ✅ conversations/*.db 세션 복원 완료');
   }
 
+  // Restore projects directory
+  const snapProjDir = path.join(targetSnapshot.path, 'projects');
+  if (cfg.projectsDir && fs.existsSync(snapProjDir)) {
+    fs.mkdirSync(cfg.projectsDir, { recursive: true });
+    for (const f of fs.readdirSync(snapProjDir)) {
+      fs.copyFileSync(path.join(snapProjDir, f), path.join(cfg.projectsDir, f));
+    }
+    console.log('   ✅ projects/*.json 프로젝트 메타데이터 복원 완료');
+  }
+
   console.log('\n🎉 스냅샷 복원이 안전하게 완료되었습니다!\n');
 }

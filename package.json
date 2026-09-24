@@ -9,7 +9,7 @@
     "antigravity-sync": "./bin/agy-sync.js"
   },
   "scripts": {
-    "test": "node --test tests/test_db_unit.js tests/test_git_unit.js tests/test_storage_unit.js tests/test_path_unit.js"
+    "test": "node --test tests/test_db_unit.js tests/test_git_unit.js tests/test_storage_unit.js tests/test_path_unit.js tests/test_project_unit.js"
   },
   "keywords": [
     "antigravity",
