@@ -29,7 +29,7 @@ try {
   assert(fs.existsSync(path.join(mockSyncDir, 'brain')));
 
   // Test 3: Import into clean destination
-  const importResult = importFromSyncDir(mockSyncDir, mockDestAgy);
+  const importResult = await importFromSyncDir(mockSyncDir, mockDestAgy);
   console.log('Import result:', importResult);
   assert(fs.existsSync(path.join(mockDestAgy, 'conversation_summaries.db')));
   assert.strictEqual(importResult.mergeStats.added, exportResult.indexCount);

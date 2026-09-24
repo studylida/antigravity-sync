@@ -1,3 +1,5 @@
+import readline from 'node:readline/promises';
+import { stdin as input, stdout as output } from 'node:process';
 import { loadConfig } from '../config.js';
 import { assertAntigravitySafe } from '../process.js';
 import { createSnapshot, importFromSyncDir } from '../storage.js';
@@ -37,7 +39,23 @@ export async function commandPull(options = {}) {
 
   // 4. Import & Merge
   console.log('🔄 로컬 대화 데이터 및 프로젝트 병합(Merge) 수행 중...');
-  const result = importFromSyncDir(cfg.syncDir, cfg.antigravityDir, cfg.projectsDir);
+
+  let rl = null;
+  let askFn = null;
+  if (!options.autoYes && process.stdin.isTTY) {
+    rl = readline.createInterface({ input, output });
+    askFn = (q) => rl.question(q);
+  }
+
+  let result;
+  try {
+    result = await importFromSyncDir(cfg.syncDir, cfg.antigravityDir, cfg.projectsDir, {
+      ...options,
+      askFn
+    });
+  } finally {
+    if (rl) rl.close();
+  }
 
   console.log('\n📊 병합 결과 보고서:');
   console.log(`   - 신규 대화 추가: ${result.mergeStats.added}개`);

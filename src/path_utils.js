@@ -1,6 +1,13 @@
 import os from 'node:os';
 
 /**
+ * Normalizes slashes to forward slashes.
+ */
+export function normalizeSlashes(p) {
+  return p ? p.replace(/\\/g, '/') : '';
+}
+
+/**
  * Normalizes any path string into clean parts (e.g. ['C:', 'Users', 'username'] or ['home', 'username']).
  */
 export function getPathParts(pathStr) {

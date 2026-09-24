@@ -19,12 +19,12 @@ fs.mkdirSync(mockProjectsDir, { recursive: true });
 // Create sample project JSON with Windows file URI
 const sampleProject = {
   id: 'test-project-123',
-  name: 'ontology-map-lite',
+  name: 'mock-unique-sample-proj',
   projectResources: {
     resources: [
       {
         gitFolder: {
-          folderUri: 'file:///c%3A/Users/dam/ontology-map-lite',
+          folderUri: 'file:///c%3A/Users/dam/mock-unique-sample-proj',
           defaultBranch: 'main'
         }
       }
@@ -60,7 +60,7 @@ try {
 
   // Test 3: Import expands folderUri into target home
   const targetHome = 'C:/Users/alice';
-  const importResult = importFromSyncDir(mockSyncDir, mockDestAgy, mockDestProjectsDir, {
+  const importResult = await importFromSyncDir(mockSyncDir, mockDestAgy, mockDestProjectsDir, {
     targetHome
   });
   console.log('Import result:', importResult);

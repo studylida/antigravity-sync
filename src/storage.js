@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { exportSummaries, importAndMergeSummaries } from './db.js';
 import { expandPaths, templatizePaths } from './path_utils.js';
+import { resolveProjectLocalPath, toFileUri } from './project_locator.js';
 
 /**
  * Creates an emergency rollback snapshot of local Antigravity state.
@@ -202,7 +203,7 @@ export function exportToSyncDir(antigravityDir, syncDir, projectsDir = '') {
 /**
  * Imports and merges conversations and projects from sync directory into local Antigravity.
  */
-export function importFromSyncDir(syncDir, antigravityDir, projectsDir = '', options = {}) {
+export async function importFromSyncDir(syncDir, antigravityDir, projectsDir = '', options = {}) {
   const indexJsonPath = path.join(syncDir, 'conversations_index.json');
   if (!fs.existsSync(indexJsonPath)) {
     throw new Error(`Sync index not found at ${indexJsonPath}. Has a push been executed?`);
@@ -258,7 +259,7 @@ export function importFromSyncDir(syncDir, antigravityDir, projectsDir = '', opt
     }
   }
 
-  // 4. Copy and adapt project definitions
+  // 4. Copy and adapt project definitions with smart local discovery
   const syncProjects = path.join(syncDir, 'projects');
   let copiedProjectCount = 0;
   if (projectsDir && fs.existsSync(syncProjects)) {
@@ -267,13 +268,36 @@ export function importFromSyncDir(syncDir, antigravityDir, projectsDir = '', opt
     for (const f of pFiles) {
       if (f.endsWith('.json')) {
         const raw = fs.readFileSync(path.join(syncProjects, f), 'utf8');
-        const expanded = expandPaths(
-          raw,
-          options.targetHome || os.homedir(),
-          indexData.sourceHomeDir || '',
-          options.pathMappings || {}
-        );
-        fs.writeFileSync(path.join(projectsDir, f), expanded, 'utf8');
+        try {
+          const projectObj = JSON.parse(raw);
+          const resolvedPath = await resolveProjectLocalPath(projectObj, projectsDir, options);
+          if (resolvedPath) {
+            const newUri = toFileUri(resolvedPath);
+            if (projectObj.projectResources?.resources) {
+              for (const res of projectObj.projectResources.resources) {
+                if (res.gitFolder) res.gitFolder.folderUri = newUri;
+                if (res.workspaceUri) res.workspaceUri = newUri;
+              }
+            }
+            fs.writeFileSync(path.join(projectsDir, f), JSON.stringify(projectObj, null, 2), 'utf8');
+          } else {
+            const expanded = expandPaths(
+              raw,
+              options.targetHome || os.homedir(),
+              indexData.sourceHomeDir || '',
+              options.pathMappings || {}
+            );
+            fs.writeFileSync(path.join(projectsDir, f), expanded, 'utf8');
+          }
+        } catch {
+          const expanded = expandPaths(
+            raw,
+            options.targetHome || os.homedir(),
+            indexData.sourceHomeDir || '',
+            options.pathMappings || {}
+          );
+          fs.writeFileSync(path.join(projectsDir, f), expanded, 'utf8');
+        }
         copiedProjectCount++;
       }
     }
