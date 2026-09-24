@@ -1,6 +1,6 @@
 # 🌌 Antigravity Sync (`agy-sync`)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 [![Node: >=20](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg)](https://nodejs.org/)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)](#)
 
@@ -140,4 +140,4 @@ npm test
 
 ## 📄 라이선스 (License)
 
-이 프로젝트는 [MIT License](LICENSE)에 따라 자유롭게 사용, 수정, 배포할 수 있습니다.
+이 프로젝트는 [GNU General Public License v3.0 (GPL-3.0)](LICENSE)에 따라 배포됩니다.
