@@ -1,4 +1,4 @@
-import { templatizePaths, expandPaths } from '../src/path_utils.js';
+import { templatizePaths, expandPaths, expandPathString } from '../src/path_utils.js';
 import assert from 'node:assert';
 
 const sourceHome = 'C:\\Users\\BISTelligence';
@@ -45,5 +45,10 @@ const customString = 'D:/legacy-workspace/my-project';
 const customAdapted = expandPaths(customString, targetHome, '', { 'D:/legacy-workspace': 'C:/Users/dam/projects' });
 console.log('Custom adapted:', customAdapted);
 assert.strictEqual(customAdapted, 'C:/Users/dam/projects/my-project');
+
+// Test 6: In-memory JSON path string normalization across Windows and POSIX
+const parsedFromJson = JSON.parse(templatizedJson).path;
+assert.strictEqual(expandPathString(parsedFromJson, 'C:\\Users\\alice'), 'C:\\Users\\alice\\ontology-map-lite');
+assert.strictEqual(expandPathString(parsedFromJson, '/Users/alice'), '/Users/alice/ontology-map-lite');
 
 console.log('All path_utils unit tests passed successfully! 🎉');

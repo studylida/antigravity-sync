@@ -3,51 +3,81 @@
 import { commandInit } from '../src/commands/init.js';
 import { commandPush } from '../src/commands/push.js';
 import { commandPull } from '../src/commands/pull.js';
+import { commandBridge } from '../src/commands/bridge.js';
 import { commandStatus } from '../src/commands/status.js';
 import { commandRestore } from '../src/commands/restore.js';
+import { TOOL_VERSION } from '../src/version.js';
 
 const args = process.argv.slice(2);
 const command = args[0] || 'help';
 
 function printHelp() {
   console.log(`
-Antigravity Sync (agy-sync) - v1.0.0
-Multi-device conversation backup and synchronization for Google Antigravity.
+Antigravity Sync (agy-sync) - v${TOOL_VERSION}
+Multi-device sync, backup, and local Desktop <-> CLI bridge for Google Antigravity.
 
 Usage:
   agy-sync <command> [options]
   npx antigravity-sync <command> [options]
 
 Commands:
-  init                     Interactive setup for sync directory and storage
-  push [options]           Export local conversations and push to sync repository
-  pull [options]           Pull conversations from sync repository and merge locally
-  status                   Show sync status and diff between local and remote
+  init                     Interactive setup for Desktop, CLI, Config, and sync storage
+  bridge [options]         Bridge conversations locally between Desktop and CLI (agy)
+  push [options]           Export Desktop, CLI, and Config state and push to sync repo
+  pull [options]           Pull from sync repo and merge into local Desktop, CLI, and Config
+  status                   Show process status, local bridge diff, and remote sync diff
   restore [snapshot]       Restore local state from an emergency backup snapshot
   help                     Show this help message
 
-Options for push:
-  -m, --message <msg>      Custom commit message for Git push
-  --force                  Bypass Antigravity running process check
+Options for push / pull:
+  --target <name>          Sync target: all (default), desktop, cli, or config
+  -m, --message <msg>      Custom commit message for Git push (push only)
+  --auto-yes               Auto-confirm project locator prompts (pull only)
+  --force                  Bypass running Antigravity Desktop / CLI process check
 
-Options for pull / restore:
-  --force                  Bypass Antigravity running process check
+Options for bridge:
+  --direction <dir>        Bridge direction: both (default), cli-to-desktop, or desktop-to-cli
+  --dry-run                Preview bridge diff without modifying files
+  --force                  Bypass running Antigravity Desktop / CLI process check
+
+Options for restore:
+  --force                  Bypass running Antigravity Desktop / CLI process check
 
 Examples:
-  npx antigravity-sync init
-  npx antigravity-sync push -m "Finish 3D graph refactor"
-  npx antigravity-sync pull
-  npx antigravity-sync status
+  agy-sync init
+  agy-sync bridge --dry-run
+  agy-sync bridge --direction cli-to-desktop
+  agy-sync push -m "Sync desktop and cli sessions"
+  agy-sync pull --target cli
+  agy-sync status
 `);
 }
 
 function parseOptions(argList) {
-  const options = { force: false, message: '' };
+  const options = {
+    force: false,
+    message: '',
+    target: 'all',
+    direction: 'both',
+    dryRun: false,
+    autoYes: false
+  };
   for (let i = 0; i < argList.length; i++) {
-    if (argList[i] === '--force') {
+    const arg = argList[i];
+    if (arg === '--force') {
       options.force = true;
-    } else if (argList[i] === '-m' || argList[i] === '--message') {
+    } else if (arg === '--dry-run') {
+      options.dryRun = true;
+    } else if (arg === '--auto-yes' || arg === '-y') {
+      options.autoYes = true;
+    } else if (arg === '-m' || arg === '--message') {
       options.message = argList[i + 1] || '';
+      i++;
+    } else if (arg === '--target' || arg === '-t') {
+      options.target = argList[i + 1] || 'all';
+      i++;
+    } else if (arg === '--direction' || arg === '-d') {
+      options.direction = argList[i + 1] || 'both';
       i++;
     }
   }
@@ -60,6 +90,12 @@ async function main() {
       case 'init':
         await commandInit();
         break;
+
+      case 'bridge': {
+        const options = parseOptions(args.slice(1));
+        await commandBridge(options);
+        break;
+      }
 
       case 'push': {
         const options = parseOptions(args.slice(1));
@@ -86,7 +122,7 @@ async function main() {
 
       case '-v':
       case '--version':
-        console.log('antigravity-sync v1.0.0');
+        console.log(`antigravity-sync v${TOOL_VERSION}`);
         break;
 
       case 'help':

@@ -1,4 +1,4 @@
-import { createSnapshot, listSnapshots, exportToSyncDir, importFromSyncDir } from '../src/storage.js';
+import { createSnapshot, exportToSyncDir, importFromSyncDir } from '../src/storage.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert';
@@ -16,7 +16,6 @@ const mockDestAgy = path.join(testDir, 'dest-antigravity');
 
 fs.mkdirSync(mockProjectsDir, { recursive: true });
 
-// Create sample project JSON with Windows file URI
 const sampleProject = {
   id: 'test-project-123',
   name: 'mock-unique-sample-proj',
@@ -41,18 +40,18 @@ fs.writeFileSync(
 );
 
 try {
-  // Test 1: Snapshot includes projects
+  // Test 1: Legacy signature Snapshot includes projects
   const snapshotPath = createSnapshot(mockAgy, mockBackupDir, mockProjectsDir);
   assert(fs.existsSync(path.join(snapshotPath, 'projects', 'test-project-123.json')));
   console.log('Project snapshot verified! ✅');
 
-  // Test 2: Export templatizes folderUri in projects
+  // Test 2: Export templatizes folderUri in config/projects
   const exportResult = exportToSyncDir(mockAgy, mockSyncDir, mockProjectsDir);
   console.log('Export result:', exportResult);
   assert.strictEqual(exportResult.projectCount, 1);
 
   const syncProjectRaw = fs.readFileSync(
-    path.join(mockSyncDir, 'projects', 'test-project-123.json'),
+    path.join(mockSyncDir, 'config', 'projects', 'test-project-123.json'),
     'utf8'
   );
   assert(syncProjectRaw.includes('{{USER_HOME}}'), 'folderUri must be templatized with {{USER_HOME}}');

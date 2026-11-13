@@ -1,94 +1,89 @@
-import { loadConfig } from '../config.js';
-import { isAntigravityRunning } from '../process.js';
-import { exportSummaries } from '../db.js';
-import { isGitRepo, getGitStatus } from '../git.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { loadConfig } from '../config.js';
+import { getRunningProcesses } from '../process.js';
+import { exportSummaries } from '../db.js';
+import { getBridgeDiff } from '../bridge.js';
+import { isGitRepo, getGitStatus } from '../git.js';
+import { TOOL_VERSION } from '../version.js';
+
+function readIndexConversations(indexPath) {
+  if (!fs.existsSync(indexPath)) return [];
+  try {
+    return JSON.parse(fs.readFileSync(indexPath, 'utf8')).conversations || [];
+  } catch {
+    return [];
+  }
+}
+
+function printDiffSection(label, localConvs, remoteConvs) {
+  const localIds = new Set(localConvs.map(c => c.conversation_id));
+  const remoteIds = new Set(remoteConvs.map(c => c.conversation_id));
+  const localOnly = localConvs.filter(c => !remoteIds.has(c.conversation_id));
+  const remoteOnly = remoteConvs.filter(c => !localIds.has(c.conversation_id));
+
+  console.log(`   [${label}] Push 대기(로컬만): ${localOnly.length}개 | Pull 대기(원격만): ${remoteOnly.length}개`);
+  for (const c of localOnly.slice(0, 3)) {
+    console.log(`     📤 [${c.last_modified_time?.substring(0, 10) || 'N/A'}] ${c.title || '(제목 없음)'} (${c.conversation_id.substring(0, 8)}...)`);
+  }
+  for (const c of remoteOnly.slice(0, 3)) {
+    console.log(`     📥 [${c.last_modified_time?.substring(0, 10) || 'N/A'}] ${c.title || '(제목 없음)'} (${c.conversation_id.substring(0, 8)}...)`);
+  }
+}
 
 export async function commandStatus() {
   const cfg = loadConfig();
-  console.log('\n📊 Antigravity Sync 상태 보고서');
+  console.log(`\n📊 Antigravity Sync v${TOOL_VERSION} 상태 보고서`);
   console.log('==================================================');
 
-  // 1. Process
-  const running = isAntigravityRunning();
-  console.log(`[앱 상태]       Antigravity 프로세스: ${running ? '🟢 실행 중 (동기화 전 종료 권장)' : '⚪ 미실행 (동기화 가능)'}`);
+  // 1. Process status
+  const procs = getRunningProcesses();
+  console.log(`[앱 상태]       Desktop: ${procs.desktop ? '🟢 실행 중' : '⚪ 미실행'} | CLI (agy): ${procs.cli ? '🟢 실행 중' : '⚪ 미실행'}`);
 
-  // 2. Local info
-  const localDb = path.join(cfg.antigravityDir, 'conversation_summaries.db');
-  let localConvs = [];
-  if (fs.existsSync(localDb)) {
-    try {
-      const exported = exportSummaries(localDb);
-      localConvs = exported.conversations;
-    } catch (e) {
-      console.warn('로컬 DB 읽기 실패:', e.message);
-    }
-  }
-  console.log(`[로컬 데이터]   경로: ${cfg.antigravityDir}`);
-  console.log(`                보유 대화 수: ${localConvs.length}개`);
-  let localProjects = [];
-  if (cfg.projectsDir && fs.existsSync(cfg.projectsDir)) {
-    localProjects = fs.readdirSync(cfg.projectsDir).filter(f => f.endsWith('.json'));
-  }
-  console.log(`                등록된 프로젝트: ${localProjects.length}개`);
+  // 2. Local Desktop & CLI
+  const desktopDb = path.join(cfg.desktopDir, 'conversation_summaries.db');
+  const cliDb = path.join(cfg.cliDir, 'conversation_summaries.db');
+  const desktopConvs = fs.existsSync(desktopDb) ? exportSummaries(desktopDb).conversations : [];
+  const cliConvs = fs.existsSync(cliDb) ? exportSummaries(cliDb).conversations : [];
+  const localProjects = cfg.projectsDir && fs.existsSync(cfg.projectsDir)
+    ? fs.readdirSync(cfg.projectsDir).filter(f => f.endsWith('.json'))
+    : [];
 
-  // 3. Sync repo info
+  console.log(`[Desktop 로컬]  경로: ${cfg.desktopDir} (${desktopConvs.length}개 대화)`);
+  console.log(`[CLI 로컬]      경로: ${cfg.cliDir} (${cliConvs.length}개 대화, 폴더 존재: ${fs.existsSync(cfg.cliDir) ? 'O' : 'X'})`);
+  console.log(`[Config 로컬]   프로젝트: ${localProjects.length}개`);
+
+  // 3. Local Bridge diff
+  const bridgeDiff = getBridgeDiff(cfg.desktopDir, cfg.cliDir);
+  console.log(`[로컬 브리지]   CLI→Desktop 대기: ${bridgeDiff.cliOnly.length}개 신규 / ${bridgeDiff.newerInCli.length}개 갱신`);
+  console.log(`                Desktop→CLI 대기: ${bridgeDiff.desktopOnly.length}개 신규 / ${bridgeDiff.newerInDesktop.length}개 갱신`);
+
+  // 4. Sync repo info (v2 or legacy v1)
   console.log(`[동기화 저장소] 경로: ${cfg.syncDir}`);
-  let remoteConvs = [];
-  const indexJsonPath = path.join(cfg.syncDir, 'conversations_index.json');
-  if (fs.existsSync(indexJsonPath)) {
-    try {
-      const raw = fs.readFileSync(indexJsonPath, 'utf8');
-      remoteConvs = JSON.parse(raw).conversations || [];
-    } catch {
-      // ignore
-    }
+  const manifestPath = path.join(cfg.syncDir, 'manifest.json');
+  let remoteDesktopConvs = [];
+  let remoteCliConvs = [];
+
+  if (fs.existsSync(manifestPath)) {
+    remoteDesktopConvs = readIndexConversations(path.join(cfg.syncDir, 'desktop', 'conversations_index.json'));
+    remoteCliConvs = readIndexConversations(path.join(cfg.syncDir, 'cli', 'conversations_index.json'));
+    const remoteProjDir = path.join(cfg.syncDir, 'config', 'projects');
+    const remoteProjects = fs.existsSync(remoteProjDir) ? fs.readdirSync(remoteProjDir).filter(f => f.endsWith('.json')) : [];
+    console.log(`                포맷: v2 | Desktop: ${remoteDesktopConvs.length}개 | CLI: ${remoteCliConvs.length}개 | 프로젝트: ${remoteProjects.length}개`);
+  } else {
+    remoteDesktopConvs = readIndexConversations(path.join(cfg.syncDir, 'conversations_index.json'));
+    console.log(`                포맷: v1(레거시) 또는 미초기화 | Desktop: ${remoteDesktopConvs.length}개`);
   }
-  console.log(`                저장소 대화 수: ${remoteConvs.length}개`);
-  let remoteProjects = [];
-  const syncProjectsDir = path.join(cfg.syncDir, 'projects');
-  if (fs.existsSync(syncProjectsDir)) {
-    remoteProjects = fs.readdirSync(syncProjectsDir).filter(f => f.endsWith('.json'));
-  }
-  console.log(`                저장소 프로젝트: ${remoteProjects.length}개`);
 
   if (isGitRepo(cfg.syncDir)) {
     const gitStatus = getGitStatus(cfg.syncDir);
     if (gitStatus) {
-      console.log(`[Git 상태]      브랜치: ${gitStatus.branch}`);
-      console.log(`                원격 URL: ${gitStatus.remote || '(설정되지 않음)'}`);
-      console.log(`                로컬 변경사항: ${gitStatus.hasChanges ? '있음 (push 권장)' : '없음 (동기화됨)'}`);
+      console.log(`[Git 상태]      브랜치: ${gitStatus.branch} | 원격: ${gitStatus.remote || '(미설정)'} | 변경: ${gitStatus.hasChanges ? '있음' : '없음'}`);
     }
   }
-
-  // 4. Comparison
-  const localIds = new Set(localConvs.map(c => c.conversation_id));
-  const remoteIds = new Set(remoteConvs.map(c => c.conversation_id));
-
-  const localOnly = localConvs.filter(c => !remoteIds.has(c.conversation_id));
-  const remoteOnly = remoteConvs.filter(c => !localIds.has(c.conversation_id));
 
   console.log('--------------------------------------------------');
-  if (localOnly.length > 0) {
-    console.log(`📤 Push 대기 중인 로컬 신규 대화 (${localOnly.length}개):`);
-    for (const c of localOnly.slice(0, 5)) {
-      console.log(`   - [${c.last_modified_time?.substring(0, 10) || 'N/A'}] ${c.title || '(제목 없음)'} (${c.conversation_id.substring(0, 8)}...)`);
-    }
-    if (localOnly.length > 5) console.log(`   ...외 ${localOnly.length - 5}개`);
-  } else {
-    console.log('📤 Push 대기 중인 로컬 신규 대화: 없음');
-  }
-
-  if (remoteOnly.length > 0) {
-    console.log(`📥 Pull 대기 중인 원격 신규 대화 (${remoteOnly.length}개):`);
-    for (const c of remoteOnly.slice(0, 5)) {
-      console.log(`   - [${c.last_modified_time?.substring(0, 10) || 'N/A'}] ${c.title || '(제목 없음)'} (${c.conversation_id.substring(0, 8)}...)`);
-    }
-    if (remoteOnly.length > 5) console.log(`   ...외 ${remoteOnly.length - 5}개`);
-  } else {
-    console.log('📥 Pull 대기 중인 원격 신규 대화: 없음');
-  }
-
+  printDiffSection('Desktop', desktopConvs, remoteDesktopConvs);
+  printDiffSection('CLI', cliConvs, remoteCliConvs);
   console.log('==================================================\n');
 }

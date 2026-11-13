@@ -1,16 +1,21 @@
-import { exportSummaries, importAndMergeSummaries, ensureSummariesDb } from '../src/db.js';
+import { exportSummaries, importAndMergeSummaries } from '../src/db.js';
+import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert';
 
 const tempDbPath = path.join(process.cwd(), 'tests', 'temp_test_summaries.db');
-if (fs.existsSync(tempDbPath)) fs.unlinkSync(tempDbPath);
+const tempCliDbPath = path.join(process.cwd(), 'tests', 'temp_test_cli_summaries.db');
+for (const p of [tempDbPath, tempCliDbPath]) {
+  if (fs.existsSync(p)) fs.unlinkSync(p);
+}
 
 try {
   const sourceDbPath = 'C:/Users/dam/.gemini/antigravity/conversation_summaries.db';
   const exported = exportSummaries(sourceDbPath);
   console.log('Exported conversations count:', exported.conversations.length);
   assert(exported.conversations.length >= 2);
+  assert.strictEqual(exported.version, 2);
 
   // Test merge into fresh DB
   const result1 = importAndMergeSummaries(tempDbPath, exported);
@@ -41,7 +46,54 @@ try {
   const found = reExported.conversations.find(c => c.conversation_id === modified.conversations[0].conversation_id);
   assert.strictEqual(found.title, 'Updated Title by Remote');
 
+  // Test CLI conversation_parents export & merge
+  const cliIndex = {
+    version: 2,
+    sourceHomeDir: 'C:/Users/work',
+    conversations: [
+      {
+        conversation_id: 'cli-child-1',
+        title: 'Forked CLI Session',
+        preview: 'test',
+        step_count: 5,
+        last_modified_time: new Date().toISOString(),
+        workspace_uris: '["file:///{{USER_HOME}}/proj"]',
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        source: '',
+        project_id: 'default-cli-project',
+        agent_name: '',
+        parent_conversation_id: 'cli-parent-1',
+        nesting_depth: 1,
+        battle_id: '',
+        winning_conversation_id: '',
+        not_fully_idle: 0,
+        killed: 0,
+        last_user_input_time: new Date().toISOString(),
+        last_user_input_step_index: 3,
+        app_data_dir: 'antigravity-cli',
+        raw_summary: null,
+        group_id: ''
+      }
+    ],
+    parents: [{ conversation_id: 'cli-child-1', parent_id: 'cli-parent-1' }]
+  };
+
+  const cliMergeRes = importAndMergeSummaries(tempCliDbPath, cliIndex, { includeParentsTable: true });
+  assert.strictEqual(cliMergeRes.added, 1);
+  assert.strictEqual(cliMergeRes.parentsMerged, 1);
+
+  const reExportedCli = exportSummaries(tempCliDbPath);
+  assert.strictEqual(reExportedCli.parents.length, 1);
+  assert.strictEqual(reExportedCli.parents[0].parent_id, 'cli-parent-1');
+
+  const rawDb = new DatabaseSync(tempCliDbPath, { readOnly: true });
+  const parentTable = rawDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_parents'").get();
+  rawDb.close();
+  assert(parentTable, 'conversation_parents table must exist in CLI DB');
+
   console.log('All db.js unit tests passed successfully! 🎉');
 } finally {
-  if (fs.existsSync(tempDbPath)) fs.unlinkSync(tempDbPath);
+  for (const p of [tempDbPath, tempCliDbPath]) {
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  }
 }

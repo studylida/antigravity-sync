@@ -2,14 +2,32 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+function getHomeDir() {
+  return process.env.USERPROFILE || os.homedir();
+}
+
+export function getDefaultDesktopDir() {
+  return path.join(getHomeDir(), '.gemini', 'antigravity');
+}
+
 export function getDefaultAntigravityDir() {
-  const home = process.env.USERPROFILE || os.homedir();
-  return path.join(home, '.gemini', 'antigravity');
+  return getDefaultDesktopDir();
+}
+
+export function getDefaultCliDir() {
+  return path.join(getHomeDir(), '.gemini', 'antigravity-cli');
+}
+
+export function getDefaultGeminiConfigDir() {
+  return path.join(getHomeDir(), '.gemini', 'config');
+}
+
+export function getDefaultProjectsDir() {
+  return path.join(getDefaultGeminiConfigDir(), 'projects');
 }
 
 export function getConfigDir() {
-  const home = process.env.USERPROFILE || os.homedir();
-  return path.join(home, '.antigravity-sync');
+  return path.join(getHomeDir(), '.antigravity-sync');
 }
 
 export function getConfigPath() {
@@ -24,47 +42,45 @@ export function getDefaultBackupDir() {
   return path.join(getConfigDir(), 'backups');
 }
 
-export function getDefaultProjectsDir() {
-  const home = process.env.USERPROFILE || os.homedir();
-  return path.join(home, '.gemini', 'config', 'projects');
+function buildDefaultConfig(overrides = {}, configured = false) {
+  const desktopDir = overrides.desktopDir || overrides.antigravityDir || getDefaultDesktopDir();
+  const geminiConfigDir = overrides.geminiConfigDir || getDefaultGeminiConfigDir();
+  const projectsDir = overrides.projectsDir || path.join(geminiConfigDir, 'projects');
+  const rawTargets = overrides.targets || {};
+
+  return {
+    configVersion: 2,
+    desktopDir,
+    antigravityDir: desktopDir,
+    cliDir: overrides.cliDir || getDefaultCliDir(),
+    geminiConfigDir,
+    projectsDir,
+    syncDir: overrides.syncDir || getDefaultSyncDir(),
+    backupDir: overrides.backupDir || getDefaultBackupDir(),
+    gitRemote: overrides.gitRemote || '',
+    autoPush: overrides.autoPush !== false,
+    targets: {
+      desktop: rawTargets.desktop !== false,
+      cli: rawTargets.cli !== false,
+      config: rawTargets.config !== false
+    },
+    configured
+  };
 }
 
 export function loadConfig() {
   const configPath = getConfigPath();
   if (!fs.existsSync(configPath)) {
-    return {
-      antigravityDir: getDefaultAntigravityDir(),
-      projectsDir: getDefaultProjectsDir(),
-      syncDir: getDefaultSyncDir(),
-      backupDir: getDefaultBackupDir(),
-      gitRemote: '',
-      autoPush: true,
-      configured: false
-    };
+    return buildDefaultConfig({}, false);
   }
+
   try {
     const raw = fs.readFileSync(configPath, 'utf8');
     const data = JSON.parse(raw);
-    return {
-      antigravityDir: data.antigravityDir || getDefaultAntigravityDir(),
-      projectsDir: data.projectsDir || getDefaultProjectsDir(),
-      syncDir: data.syncDir || getDefaultSyncDir(),
-      backupDir: data.backupDir || getDefaultBackupDir(),
-      gitRemote: data.gitRemote || '',
-      autoPush: data.autoPush !== false,
-      configured: true
-    };
+    return buildDefaultConfig(data, data.configured !== false);
   } catch (err) {
     console.error('[Config] Failed to read config file:', err.message);
-    return {
-      antigravityDir: getDefaultAntigravityDir(),
-      projectsDir: getDefaultProjectsDir(),
-      syncDir: getDefaultSyncDir(),
-      backupDir: getDefaultBackupDir(),
-      gitRemote: '',
-      autoPush: true,
-      configured: false
-    };
+    return buildDefaultConfig({}, false);
   }
 }
 
@@ -73,6 +89,6 @@ export function saveConfig(cfg) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  const configPath = getConfigPath();
-  fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf8');
+  const normalized = buildDefaultConfig(cfg, cfg.configured !== false);
+  fs.writeFileSync(getConfigPath(), JSON.stringify(normalized, null, 2), 'utf8');
 }

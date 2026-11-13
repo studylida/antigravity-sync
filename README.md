@@ -5,56 +5,40 @@
 [![Node: >=20](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg)](https://nodejs.org/)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)](#)
 
-**Google Antigravity(AGY)** 데스크톱 앱의 대화 내역 및 에이전트 브레인 데이터를 여러 컴퓨터(회사, 집, 노트북) 간에 안전하게 동기화하고 백업하는 범용 오픈소스 CLI 도구입니다.
+**Google Antigravity(AGY)** 데스크톱 앱과 **Antigravity CLI (`agy`)** 의 대화 내역, 에이전트 브레인, 설정을 **같은 PC 내에서 양방향 브리지 연동**하고 **여러 컴퓨터(회사, 집, 노트북) 간에 안전하게 동기화·백업**하는 무의존성(Zero-dependency) 오픈소스 CLI 도구입니다.
 
 ---
 
-## 💡 개발 배경 (Why Antigravity Sync?)
+## 💡 개발 배경 (Why Antigravity Sync v2?)
 
-Google Antigravity는 로컬 파일 시스템(`~/.gemini/antigravity`)에 대화 상태를 저장합니다:
-1. **대화 목록 인덱스**: `conversation_summaries.db` (SQLite DB)
-2. **세션 메시지 데이터**: `conversations/<conversation_id>.db` (SQLite DB)
-3. **에이전트 브레인 & 로그**: `brain/<conversation_id>/` (트랜스크립트, 작업 파일, 아티팩트)
+Google Antigravity는 데스크톱 앱과 CLI(`agy`)가 로컬에서 별도 디렉터리에 상태를 저장합니다:
+1. **Desktop 앱 (`~/.gemini/antigravity/`)**: `conversation_summaries.db`, `conversations/<uuid>.db`, `brain/<uuid>/`
+2. **CLI (`~/.gemini/antigravity-cli/`)**: `conversation_summaries.db`(`conversation_parents` 포함), `conversations/<uuid>.db`, `brain/<uuid>/`, `settings.json`, `cache/last_conversations.json`
+3. **공통 Config (`~/.gemini/config/`)**: `projects/*.json`, `mcp_config.json`
 
-기존에 이 폴더들을 단순 Git 커밋하거나 파일 복사로 동기화하려 할 때 다음과 같은 문제가 발생했습니다:
-* 💥 **바이너리 충돌 (Git Merge Conflict)**: 서로 다른 기기에서 대화를 나눈 후 단일 `conversation_summaries.db` 파일을 합치려 하면 Git 충돌이 발생해 DB가 손상됩니다.
-* 🔒 **파일 락 (WAL Lock)**: Antigravity가 켜져 있을 때 DB를 건드리면 파일이 잠겨 복사가 실패하거나 데이터가 깨집니다.
-* ❌ **UI 미인식**: `brain` 데이터만 백업하거나 `conversations`에 잘못 배치하면 Antigravity UI의 대화 목록에 전혀 나타나지 않습니다.
-
-**Antigravity Sync는 이 문제들을 해결하기 위해 설계되었습니다.**
+기존 v1이 데스크톱 앱의 다중 PC 동기화에만 집중했다면, **v2.0.0**부터는 다음 문제까지 함께 해결합니다:
+* 🌉 **Desktop ↔ CLI 로컬 단절 해결**: 터미널(`agy`)에서 진행하던 대화를 데스크톱 앱으로, 데스크톱에서 하던 대화를 `agy --conversation <uuid>`로 이어할 수 있도록 `bridge` 기능을 제공합니다.
+* 💥 **바이너리 충돌 방지**: 양쪽 클라이언트의 `conversation_summaries.db`를 Git 친화적 JSON(`conversations_index.json`)으로 직렬화해 무손실 합집합 병합합니다.
+* 🔒 **이중 프로세스 & WAL 잠금 보호**: `Antigravity.exe`/`antigravity`뿐만 아니라 `agy.exe`/`agy` 프로세스 실행 여부까지 감지해 DB 손상을 방지합니다.
 
 ---
 
 ## ✨ 핵심 기능
 
-* 🔄 **스마트 양방향 병합 (Non-destructive Merge)**:
-  `conversation_summaries.db`를 Git 친화적인 텍스트(`conversations_index.json`)로 직렬화하여 관리합니다. A 컴퓨터의 대화와 B 컴퓨터의 대화가 서로 지워지지 않고 합집합(Union)으로 안전하게 병합됩니다.
+* 🌉 **로컬 Desktop ↔ CLI 브리지 (`agy-sync bridge`)**:
+  같은 PC 내 데스크톱과 CLI의 대화 내역·세션 DB·브레인을 양방향(`both`) 또는 단방향(`cli-to-desktop`, `desktop-to-cli`)으로 안전하게 병합합니다. (`app_data_dir`·`source` 규칙 자동 정합, `--dry-run` 지원)
+* 🔄 **클라이언트 분리 저장 + 다중 PC 동기화 (`push` / `pull`)**:
+  `sync-data/` 내부를 `desktop/`, `cli/`, `config/`로 분리 저장해 복잡도를 낮추면서도, CLI의 `settings.json`(`trustedWorkspaces` 합집합 병합)과 `last_conversations.json`, 공통 `projects/*.json` 및 `mcp_config.json`까지 함께 동기화합니다. (기존 v1 저장소도 자동 인식 후 `push` 시 v2로 업그레이드)
 * ⚡ **Zero External Dependencies (무의존성)**:
-  Node.js v20+ 내장 모듈(`node:sqlite`, `node:fs`, `node:child_process`)만으로 작성되어, 무거운 빌드 도구나 외부 패키지 설치 없이 `npx`로 즉시 실행할 수 있습니다.
-* 📂 **스마트 프로젝트 탐색기 (Smart Project Locator)**:
-  컴퓨터마다 소스코드 경로가 달라도(`C:\git\my-app` vs `~/projects/my-app`), 로컬 폴더를 자동 탐색하고 `git remote origin` 주소를 대조 검증하여 사용자 확인(`Y/n`) 후 Antigravity 프로젝트를 안전하게 연결합니다.
-* 🌐 **사용자 홈 경로 가상화 (`{{USER_HOME}}`)**:
-  운영체제나 사용자 계정명(`C:\Users\dam` vs `/Users/work`)이 달라도 파일 경로 및 `transcript.jsonl` 내부의 클릭 링크를 대상 기기에 맞게 자동 치환합니다.
-* 🛡️ **작업 전 자동 스냅샷 (Auto-Rollback)**:
-  동기화(`pull`)나 복원 작업을 시작하기 전, 현재 로컬 상태를 타임스탬프 스냅샷으로 자동 백업합니다. 만약의 경우 `agy-sync restore` 명령어로 1초 만에 원복할 수 있습니다.
-* 🖥️ **크로스 플랫폼 & 프로세스 보호**:
-  Windows, macOS, Linux를 자동 감지하며, 동기화 중 Antigravity 앱 실행 여부를 체크하여 데이터 오염을 사전에 방지합니다.
-* ☁️ **다양한 저장소 지원**:
-  GitHub/GitLab의 **비공개(Private) 저장소** 또는 Google Drive, OneDrive, Dropbox, 로컬 공유 폴더(NAS)를 백엔드로 사용할 수 있습니다.
-
----
-
-## 📋 사전 준비 (Prerequisites)
-
-1. **Node.js (v20.0.0 이상)** 설치
-2. **동기화용 비공개(Private) 저장소 준비**:
-   * 대화 내역 및 브레인 파일에는 사내 코드나 개인정보가 포함될 수 있으므로, 동기화 백업용으로 쓸 **본인만의 비공개(Private) GitHub 레포지토리**를 미리 하나 생성해 둡니다 (예: `my-antigravity-backup`).
+  Node.js v20+ 내장 모듈(`node:sqlite`, `node:fs`, `node:child_process`)만으로 작성되어 `npx`로 즉시 실행 가능합니다.
+* 📂 **스마트 프로젝트 탐색기 & 홈 경로 가상화 (`{{USER_HOME}}`)**:
+  OS·사용자명이 달라져도(`C:\Users\work` ↔ `/Users/home`) `transcript.jsonl`, `workspace_uris`, `settings.json`, `last_conversations.json` 경로를 자동 치환하고 로컬 Git 저장소와 매칭합니다.
+* 🛡️ **작업 전 자동 스냅샷 (`restore`)**:
+  `pull` 또는 `bridge` 실행 전 로컬 Desktop·CLI·Config 상태를 자동 백업하여 언제든 `agy-sync restore`로 복원할 수 있습니다.
 
 ---
 
 ## 🚀 빠른 시작 (Quick Start)
-
-별도 설치 없이 `npx`로 바로 실행하거나, 전역 설치하여 사용할 수 있습니다:
 
 ```bash
 # npx로 즉시 실행
@@ -66,37 +50,78 @@ agy-sync <명령어>
 ```
 
 ### 1. 초기 설정 (`init`)
-처음 사용할 컴퓨터에서 설정 마법사를 실행합니다:
 ```bash
 agy-sync init
 ```
-* Antigravity 경로(기본값 자동 감지)를 확인합니다.
-* 저장소 방식(Git Private Repo 또는 클라우드 공유 폴더)을 선택합니다.
-* Git URL(예: `git@github.com:yourname/my-antigravity-backup.git`)을 입력합니다.
 
-### 2. 회사 컴퓨터에서 퇴근 전 동기화 (`push`)
-작업한 대화 내역을 동기화 저장소로 내보냅니다:
+### 2. 같은 PC에서 Desktop ↔ CLI 대화 이어하기 (`bridge`)
 ```bash
-agy-sync push -m "3D 그래프 기능 개발 세션 동기화"
+# 변경 예정 내역 미리보기
+agy-sync bridge --dry-run
+
+# 양방향 브리지 실행 (작업 전 자동 백업 생성)
+agy-sync bridge
 ```
 
-### 3. 집 컴퓨터에서 작업 시작 전 가져오기 (`pull`)
-다른 컴퓨터에서 최신 대화 내역을 안전하게 가져와 로컬 DB에 병합합니다:
+### 3. 회사 PC에서 퇴근 전 동기화 (`push`)
+```bash
+agy-sync push -m "CLI 및 데스크톱 세션 동기화"
+```
+
+### 4. 집 PC에서 작업 시작 전 가져오기 (`pull`)
 ```bash
 agy-sync pull
 ```
 
-### 4. 동기화 상태 확인 (`status`)
-로컬에만 있는 신규 대화, 원격에만 있는 신규 대화 차이를 확인합니다:
+### 5. 상태 확인 및 복원 (`status` / `restore`)
 ```bash
 agy-sync status
-```
-
-### 5. 롤백 복원 (`restore`)
-이전 상태로 되돌리고 싶을 때 자동 생성된 스냅샷으로 롤백합니다:
-```bash
 agy-sync restore
 ```
+
+---
+
+## 💻 다른 컴퓨터(회사 ↔ 집) 빠른 연동 가이드
+
+새 PC나 다른 컴퓨터에 `v2.0.0`을 세팅할 때는 아래 순서대로 진행하세요.
+*(실행 전 반드시 **Antigravity Desktop(시스템 트레이 포함)** 과 **`agy` CLI** 를 모두 종료하세요.)*
+
+1. **도구 설치 또는 최신화**
+   ```bash
+   # npm 글로벌 설치(또는 업데이트)
+   npm install -g antigravity-sync@latest
+
+   # 또는 Git 저장소 직접 설치
+   git clone https://github.com/studylida/antigravity-sync.git
+   cd antigravity-sync && npm install -g .
+
+   agy-sync --version   # antigravity-sync v2.0.0 확인
+   ```
+2. **초기 설정**: `agy-sync init` 실행 후 `1) 전체 (Desktop + CLI + Config)` 및 동일한 비공개 Git 저장소/공유 폴더 선택
+3. **로컬 브리지 (Desktop ↔ CLI 합치기)**:
+   ```bash
+   agy-sync status
+   agy-sync bridge --dry-run
+   agy-sync bridge
+   ```
+4. **원격 저장소와 동기화**:
+   ```bash
+   agy-sync pull
+   agy-sync push -m "다른 PC v2.0.0 초기 동기화"
+   ```
+   > **참고**: 기존 `v1` 동기화 저장소라도 `pull` 시 자동으로 인식해 병합하며, 다음 `push` 시 `v2` 폴더 구조(`desktop/`, `cli/`, `config/`)로 자동 업그레이드됩니다.
+5. **일상 사용 루틴**: 작업 시작 전 `agy-sync pull` (필요 시 `bridge`) → 작업 종료 후 `agy-sync bridge` → `agy-sync push`
+
+### 🤖 다른 PC의 AI 에이전트(`agy`)에게 바로 시키기 (복사용 프롬프트)
+
+다른 컴퓨터에 설치된 `agy`에게 아래 프롬프트를 그대로 붙여넣어 세팅을 맡길 수 있습니다:
+
+````markdown
+`antigravity-sync`를 v2.0.0으로 설치/업데이트해서 현재 PC의 Antigravity Desktop과 CLI(`agy`)를 연동하고 싶어.
+1. `antigravity-sync` 최신 버전을 설치(또는 로컬 레포에서 `git pull && npm install -g .`)하고 `agy-sync --version`이 `2.0.0` 이상인지 확인해줘.
+2. `agy-sync status`와 `agy-sync bridge --dry-run`을 실행해서 현재 Desktop/CLI 대화 차이점과 프로세스 실행 상태를 먼저 보여줘.
+3. 실제 `bridge`, `pull`, `push`를 실행하기 전에 내가 Desktop 앱과 `agy` CLI를 모두 종료했는지 확인받고 진행해줘.
+````
 
 ---
 
@@ -104,48 +129,60 @@ agy-sync restore
 
 | 명령어 | 설명 | 주요 옵션 |
 |---|---|---|
-| `agy-sync init` | 저장소 및 Antigravity 경로 대화형 설정 | - |
-| `agy-sync push` | 로컬 대화를 저장소로 내보내고 Git Push | `-m, --message <msg>`: 커밋 메시지<br>`--force`: 앱 실행 중 경고 무시 |
-| `agy-sync pull` | 저장소에서 가져와 로컬 DB와 무손실 병합 | `--force`: 앱 실행 중 경고 무시 |
-| `agy-sync status` | 앱 프로세스 상태 및 로컬/원격 대화 차이점 표시 | - |
-| `agy-sync restore [스냅샷]` | 직전 스냅샷 또는 지정된 백업으로 로컬 상태 복원 | `--force`: 앱 실행 중 경고 무시 |
-| `agy-sync help` | 도움말 확인 | `-h, --help` |
+| `agy-sync init` | Desktop, CLI, Config 경로 및 저장소 대화형 설정 | - |
+| `agy-sync bridge` | 같은 PC 내 Desktop ↔ CLI 대화 양방향 병합 | `--direction <both\|cli-to-desktop\|desktop-to-cli>`<br>`--dry-run`, `--force` |
+| `agy-sync push` | 로컬 Desktop/CLI/Config를 저장소로 내보내고 Git Push | `--target <all\|desktop\|cli\|config>`<br>`-m, --message <msg>`, `--force` |
+| `agy-sync pull` | 저장소에서 가져와 로컬 Desktop/CLI/Config에 무손실 병합 | `--target <all\|desktop\|cli\|config>`<br>`--auto-yes`, `--force` |
+| `agy-sync status` | 실행 프로세스, 로컬 브리지 차이, 원격 동기화 차이 표시 | - |
+| `agy-sync restore [스냅샷]` | 자동 백업 스냅샷(v1/v2)으로 로컬 상태 복원 | `--force` |
+| `agy-sync --version` | 현재 도구 SemVer 버전 출력 | `-v` |
+
+---
+
+## 📁 저장소 데이터 구조 (`schemaVersion: 2`)
+
+```text
+sync-data/
+├── manifest.json                   # 스키마/도구 버전 및 활성 타깃 메타데이터
+├── desktop/                        # ~/.gemini/antigravity
+│   ├── conversations_index.json
+│   ├── conversations/<uuid>.db
+│   └── brain/<uuid>/
+├── cli/                            # ~/.gemini/antigravity-cli
+│   ├── conversations_index.json    # conversation_parents 포함
+│   ├── conversations/<uuid>.db
+│   ├── brain/<uuid>/
+│   ├── settings.json               # 경로 템플릿화 적용
+│   └── last_conversations.json     # 작업 디렉터리별 최근 세션 맵
+└── config/                         # ~/.gemini/config
+    ├── projects/*.json
+    └── mcp_config.json
+```
+
+---
+
+## 🏷️ 버전 관리 규칙 (Semantic Versioning)
+
+이 프로젝트는 `MAJOR.MINOR.PATCH`([SemVer 2.0.0](https://semver.org/))와 [CHANGELOG.md](CHANGELOG.md)를 기준으로 버전을 관리합니다:
+* **MAJOR (`npm run version:major`)**: `sync-data/` 스키마 또는 CLI 명령어의 하위 호환이 깨지는 구조 개편
+* **MINOR (`npm run version:minor`)**: 하위 호환을 유지하는 신규 명령어, 옵션, 동기화 대상 추가
+* **PATCH (`npm run version:patch`)**: 버그 수정 및 내부 안정성 개선
 
 ---
 
 ## 🔒 보안 및 프라이버시 주의사항
 
 > [!WARNING]
-> Antigravity 대화 내역과 에이전트 브레인 파일에는 **사내 소스코드, API 키, 패스워드, 개인 프로젝트 정보**가 포함되어 있을 수 있습니다.
-> Git을 저장소로 사용할 때는 반드시 **비공개 저장소(Private Repository)**를 사용하세요.
-
----
-
-## 📁 저장소 데이터 구조
-
-동기화 저장소(Git Repo 또는 공유 폴더)에는 다음과 같이 깔끔하고 정돈된 형태로 데이터가 적재됩니다:
-
-```text
-sync-data/
-├── conversations_index.json    # [핵심] JSON으로 직렬화된 대화 메타데이터 (Git 머지 지원)
-├── conversations/              # 세션별 상세 메시지 DB (<UUID>.db)
-│   ├── 03963a29-....db
-│   └── 5f2a1572-....db
-└── brain/                      # 에이전트 작업 로그 및 아티팩트
-    ├── 03963a29-.../
-    └── 5f2a1572-.../
-```
+> Antigravity 대화 내역, 브레인 파일, `settings.json`, `mcp_config.json`에는 **사내 소스코드, API 키, 패스워드, 개인 프로젝트 경로**가 포함될 수 있습니다.
+> Git 저장소 백엔드 사용 시 반드시 **비공개 저장소(Private Repository)**를 사용하세요.
 
 ---
 
 ## 🛠️ 개발 및 테스트
 
 ```bash
-# 레포지토리 클론
 git clone https://github.com/studylida/antigravity-sync.git
 cd antigravity-sync
-
-# 단위 테스트 실행 (Node.js 내장 테스트 러너)
 npm test
 ```
 

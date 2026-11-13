@@ -1,8 +1,6 @@
 import { loadConfig } from '../config.js';
 import { assertAntigravitySafe } from '../process.js';
-import { listSnapshots } from '../storage.js';
-import fs from 'node:fs';
-import path from 'node:path';
+import { listSnapshots, restoreSnapshot } from '../storage.js';
 
 export async function commandRestore(snapshotName = '', options = {}) {
   const cfg = loadConfig();
@@ -29,34 +27,16 @@ export async function commandRestore(snapshotName = '', options = {}) {
   }
 
   console.log(`🔄 스냅샷 복원 시작: ${targetSnapshot.name} (${targetSnapshot.createdAt})`);
+  const res = restoreSnapshot(targetSnapshot.path, cfg);
 
-  // Restore conversation_summaries.db
-  const snapSummary = path.join(targetSnapshot.path, 'conversation_summaries.db');
-  const targetSummary = path.join(cfg.antigravityDir, 'conversation_summaries.db');
-  if (fs.existsSync(snapSummary)) {
-    fs.copyFileSync(snapSummary, targetSummary);
-    console.log('   ✅ conversation_summaries.db 복원 완료');
+  if (res.desktop.summary || res.desktop.dbs > 0) {
+    console.log(`   ✅ [Desktop] 인덱스: ${res.desktop.summary ? 'O' : 'X'}, 세션 DB: ${res.desktop.dbs}개 복원`);
   }
-
-  // Restore conversations directory
-  const snapConvDir = path.join(targetSnapshot.path, 'conversations');
-  const targetConvDir = path.join(cfg.antigravityDir, 'conversations');
-  if (fs.existsSync(snapConvDir)) {
-    fs.mkdirSync(targetConvDir, { recursive: true });
-    for (const f of fs.readdirSync(snapConvDir)) {
-      fs.copyFileSync(path.join(snapConvDir, f), path.join(targetConvDir, f));
-    }
-    console.log('   ✅ conversations/*.db 세션 복원 완료');
+  if (res.cli.summary || res.cli.dbs > 0 || res.cli.extras > 0) {
+    console.log(`   ✅ [CLI]     인덱스: ${res.cli.summary ? 'O' : 'X'}, 세션 DB: ${res.cli.dbs}개, 설정/캐시: ${res.cli.extras}개 복원`);
   }
-
-  // Restore projects directory
-  const snapProjDir = path.join(targetSnapshot.path, 'projects');
-  if (cfg.projectsDir && fs.existsSync(snapProjDir)) {
-    fs.mkdirSync(cfg.projectsDir, { recursive: true });
-    for (const f of fs.readdirSync(snapProjDir)) {
-      fs.copyFileSync(path.join(snapProjDir, f), path.join(cfg.projectsDir, f));
-    }
-    console.log('   ✅ projects/*.json 프로젝트 메타데이터 복원 완료');
+  if (res.projects > 0 || res.mcpRestored) {
+    console.log(`   ✅ [Config]  프로젝트: ${res.projects}개, MCP 설정: ${res.mcpRestored ? 'O' : 'X'} 복원`);
   }
 
   console.log('\n🎉 스냅샷 복원이 안전하게 완료되었습니다!\n');

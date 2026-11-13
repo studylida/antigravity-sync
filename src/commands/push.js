@@ -10,12 +10,14 @@ export async function commandPush(options = {}) {
     return;
   }
 
-  // 1. Process check
-  assertAntigravitySafe(options.force);
+  const target = options.target || 'all';
+  assertAntigravitySafe(options.force, {
+    desktop: target === 'all' || target === 'desktop',
+    cli: target === 'all' || target === 'cli'
+  });
 
-  console.log('🔄 로컬 대화 내역 내보내기 (Push) 준비 중...');
+  console.log(`🔄 로컬 Antigravity 데이터 내보내기 (Push, 대상: ${target}) 준비 중...`);
 
-  // 2. If git, pull latest first to minimize conflicts
   if (isGitRepo(cfg.syncDir)) {
     try {
       console.log('📥 원격 저장소 최신 상태 확인 중 (Git Pull)...');
@@ -25,17 +27,19 @@ export async function commandPush(options = {}) {
     }
   }
 
-  // 3. Export to sync directory
-  console.log(`📦 대화 인덱스, 세션 데이터 및 프로젝트 내보내는 중 -> ${cfg.syncDir}`);
-  const result = exportToSyncDir(cfg.antigravityDir, cfg.syncDir, cfg.projectsDir);
-  console.log(`   - 대화 인덱스: ${result.indexCount}개`);
-  console.log(`   - 세션 데이터베이스(.db): ${result.convCount}개`);
-  console.log(`   - 에이전트 브레인 디렉터리: ${result.brainCount}개`);
-  console.log(`   - 프로젝트 메타데이터: ${result.projectCount}개`);
+  console.log(`📦 저장소로 내보내는 중 -> ${cfg.syncDir}`);
+  const result = exportToSyncDir(cfg, { target });
 
-  // 4. Git commit and push if applicable
+  if (result.desktop.present) {
+    console.log(`   [Desktop] 인덱스: ${result.desktop.indexCount}개 | DB: ${result.desktop.convCount}개 | 브레인: ${result.desktop.brainCount}개`);
+  }
+  if (result.cli.present) {
+    console.log(`   [CLI]     인덱스: ${result.cli.indexCount}개 | DB: ${result.cli.convCount}개 | 브레인: ${result.cli.brainCount}개 | 설정: ${result.cli.settingsExported ? 'O' : 'X'} | 최근세션: ${result.cli.lastConversationsExported ? 'O' : 'X'}`);
+  }
+  console.log(`   [Config]  프로젝트: ${result.config.projectCount}개 | MCP 설정: ${result.config.mcpExported ? 'O' : 'X'}`);
+
   if (isGitRepo(cfg.syncDir)) {
-    const commitMsg = options.message || `Sync antigravity sessions [${new Date().toISOString().replace('T', ' ').substring(0, 19)}]`;
+    const commitMsg = options.message || `Sync antigravity v2 (${target}) [${new Date().toISOString().replace('T', ' ').substring(0, 19)}]`;
     console.log(`🚀 Git 커밋 및 푸시 진행 중 ("${commitMsg}")...`);
     const gitRes = gitCommitAndPush(cfg.syncDir, commitMsg);
     if (gitRes.committed) {

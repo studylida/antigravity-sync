@@ -1,7 +1,7 @@
 {
   "name": "antigravity-sync",
-  "version": "1.0.0",
-  "description": "Seamless bidirectional conversation sync and backup for Google Antigravity across multiple machines.",
+  "version": "2.0.0",
+  "description": "Seamless bidirectional sync, backup, and Desktop-CLI bridge for Google Antigravity across multiple machines.",
   "type": "module",
   "main": "src/index.js",
   "bin": {
@@ -9,12 +9,17 @@
     "antigravity-sync": "bin/agy-sync.js"
   },
   "scripts": {
-    "test": "node --test tests/test_db_unit.js tests/test_git_unit.js tests/test_storage_unit.js tests/test_path_unit.js tests/test_project_unit.js tests/test_locator_unit.js"
+    "test": "node --test tests/test_db_unit.js tests/test_git_unit.js tests/test_storage_unit.js tests/test_path_unit.js tests/test_project_unit.js tests/test_locator_unit.js tests/test_bridge_unit.js tests/test_process_unit.js",
+    "version:patch": "npm version patch -m \"chore(release): v%s\"",
+    "version:minor": "npm version minor -m \"chore(release): v%s\"",
+    "version:major": "npm version major -m \"chore(release): v%s\""
   },
   "keywords": [
     "antigravity",
+    "agy",
     "backup",
     "sync",
+    "bridge",
     "ai",
     "gemini",
     "chat-history"
@@ -33,6 +38,7 @@
     "bin",
     "src",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "engines": {

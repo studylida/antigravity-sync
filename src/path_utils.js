@@ -127,3 +127,25 @@ export function expandPaths(text, targetHomeDir = os.homedir(), sourceHomeDir = 
 
   return result;
 }
+
+/**
+ * Expands a single in-memory filesystem path string (e.g. parsed from settings.json or last_conversations.json)
+ * and normalizes separators to match the target home directory's OS convention.
+ */
+export function expandPathString(pathValue, targetHomeDir = os.homedir(), sourceHomeDir = '', customMappings = {}) {
+  if (!pathValue || typeof pathValue !== 'string') return pathValue;
+
+  // In-memory JS strings should not use JSON-escaped double backslashes
+  const normalizedPlaceholder = pathValue
+    .replaceAll('{{USER_HOME_JSON}}', '{{USER_HOME}}')
+    .replaceAll('{{USER_HOME_BACKSLASH}}', '{{USER_HOME}}');
+
+  const expanded = expandPaths(normalizedPlaceholder, targetHomeDir, sourceHomeDir, customMappings);
+  if (expanded.startsWith('file:///')) {
+    return expanded;
+  }
+
+  const targetParts = getPathParts(targetHomeDir);
+  const isWindowsTarget = targetParts.length > 0 && targetParts[0].includes(':');
+  return isWindowsTarget ? expanded.replace(/\//g, '\\') : expanded.replace(/\\/g, '/');
+}
