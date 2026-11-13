@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { exportSummaries, importAndMergeSummaries } from './db.js';
+import { exportSummaries, importAndMergeSummaries, checkpointSqliteDb } from './db.js';
 import { expandPaths, expandPathString, templatizePaths } from './path_utils.js';
 import { resolveProjectLocalPath, toFileUri } from './project_locator.js';
+import { PROTO_CACHE_FILENAMES, syncClientProtoSummaries } from './proto_summaries.js';
 import { TOOL_VERSION, SYNC_SCHEMA_VERSION } from './version.js';
 
 function copyMatchingFiles(srcDir, destDir, predicate) {
@@ -23,12 +24,22 @@ function copyMatchingFiles(srcDir, destDir, predicate) {
   return count;
 }
 
+function removeSqliteSidecars(dbPath) {
+  for (const ext of ['-wal', '-shm']) {
+    const sidecar = `${dbPath}${ext}`;
+    if (fs.existsSync(sidecar)) {
+      fs.rmSync(sidecar, { force: true });
+    }
+  }
+}
+
 function backupClientFiles(clientDir, destDir, includeCliExtras = false) {
   if (!clientDir || !fs.existsSync(clientDir)) return;
   fs.mkdirSync(destDir, { recursive: true });
 
   const summaryDb = path.join(clientDir, 'conversation_summaries.db');
   if (fs.existsSync(summaryDb)) {
+    checkpointSqliteDb(summaryDb);
     try {
       fs.copyFileSync(summaryDb, path.join(destDir, 'conversation_summaries.db'));
       if (fs.existsSync(summaryDb + '-wal')) {
@@ -39,8 +50,24 @@ function backupClientFiles(clientDir, destDir, includeCliExtras = false) {
     }
   }
 
+  for (const protoName of PROTO_CACHE_FILENAMES) {
+    const protoSrc = path.join(clientDir, protoName);
+    if (fs.existsSync(protoSrc)) {
+      fs.copyFileSync(protoSrc, path.join(destDir, protoName));
+    }
+  }
+
+  const srcConvsDir = path.join(clientDir, 'conversations');
+  if (fs.existsSync(srcConvsDir)) {
+    for (const file of fs.readdirSync(srcConvsDir)) {
+      if (file.endsWith('.db')) {
+        checkpointSqliteDb(path.join(srcConvsDir, file));
+      }
+    }
+  }
+
   copyMatchingFiles(
-    path.join(clientDir, 'conversations'),
+    srcConvsDir,
     path.join(destDir, 'conversations'),
     f => f.endsWith('.db')
   );
@@ -141,13 +168,28 @@ function restoreClientBackup(snapClientDir, targetClientDir, includeCliExtras = 
   fs.mkdirSync(targetClientDir, { recursive: true });
 
   const snapSummary = path.join(snapClientDir, 'conversation_summaries.db');
+  const targetSummary = path.join(targetClientDir, 'conversation_summaries.db');
   if (fs.existsSync(snapSummary)) {
-    fs.copyFileSync(snapSummary, path.join(targetClientDir, 'conversation_summaries.db'));
+    removeSqliteSidecars(targetSummary);
+    fs.copyFileSync(snapSummary, targetSummary);
     const snapWal = snapSummary + '-wal';
-    if (fs.existsSync(snapWal)) {
-      fs.copyFileSync(snapWal, path.join(targetClientDir, 'conversation_summaries.db-wal'));
+    if (fs.existsSync(snapWal) && fs.statSync(snapWal).size > 0) {
+      fs.copyFileSync(snapWal, targetSummary + '-wal');
     }
+    checkpointSqliteDb(targetSummary);
     restored.summary = true;
+  }
+
+  let restoredProto = false;
+  for (const protoName of PROTO_CACHE_FILENAMES) {
+    const snapProto = path.join(snapClientDir, protoName);
+    if (fs.existsSync(snapProto)) {
+      fs.copyFileSync(snapProto, path.join(targetClientDir, protoName));
+      restoredProto = true;
+    }
+  }
+  if (!restoredProto && restored.summary) {
+    syncClientProtoSummaries(targetClientDir, targetSummary);
   }
 
   restored.dbs = copyMatchingFiles(
@@ -155,6 +197,14 @@ function restoreClientBackup(snapClientDir, targetClientDir, includeCliExtras = 
     path.join(targetClientDir, 'conversations'),
     f => f.endsWith('.db')
   );
+  const targetConvsDir = path.join(targetClientDir, 'conversations');
+  if (fs.existsSync(path.join(snapClientDir, 'conversations'))) {
+    for (const file of fs.readdirSync(path.join(snapClientDir, 'conversations'))) {
+      if (file.endsWith('.db')) {
+        removeSqliteSidecars(path.join(targetConvsDir, file));
+      }
+    }
+  }
 
   if (includeCliExtras) {
     const snapSettings = path.join(snapClientDir, 'settings.json');
@@ -252,6 +302,7 @@ export function copyDirRecursive(src, dest, transformFn = null) {
  */
 export function copyConversationDbs(srcConvDir, destConvDir, onlyIds = null) {
   if (!fs.existsSync(srcConvDir)) return 0;
+  if (onlyIds && onlyIds.size === 0) return 0;
   fs.mkdirSync(destConvDir, { recursive: true });
   let copiedCount = 0;
   for (const file of fs.readdirSync(srcConvDir)) {
@@ -260,8 +311,10 @@ export function copyConversationDbs(srcConvDir, destConvDir, onlyIds = null) {
     if (onlyIds && !onlyIds.has(convId)) continue;
     const src = path.join(srcConvDir, file);
     const dest = path.join(destConvDir, file);
+    checkpointSqliteDb(src);
     if (!fs.existsSync(dest) || fs.statSync(src).mtimeMs > fs.statSync(dest).mtimeMs) {
       fs.copyFileSync(src, dest);
+      removeSqliteSidecars(dest);
       copiedCount++;
     }
   }
@@ -273,6 +326,7 @@ export function copyConversationDbs(srcConvDir, destConvDir, onlyIds = null) {
  */
 export function copyBrainDirs(srcBrainDir, destBrainDir, transformFn = null, onlyIds = null) {
   if (!fs.existsSync(srcBrainDir)) return 0;
+  if (onlyIds && onlyIds.size === 0) return 0;
   fs.mkdirSync(destBrainDir, { recursive: true });
   let copiedCount = 0;
   for (const d of fs.readdirSync(srcBrainDir, { withFileTypes: true })) {
@@ -296,11 +350,21 @@ function exportClientStore(clientDir, outDir, homeDir = os.homedir()) {
   fs.mkdirSync(outBrain, { recursive: true });
 
   const localSummaryDb = path.join(clientDir, 'conversation_summaries.db');
+  checkpointSqliteDb(localSummaryDb);
   const indexData = exportSummaries(localSummaryDb, homeDir);
   fs.writeFileSync(path.join(outDir, 'conversations_index.json'), JSON.stringify(indexData, null, 2), 'utf8');
 
+  const srcConvsDir = path.join(clientDir, 'conversations');
+  if (fs.existsSync(srcConvsDir)) {
+    for (const file of fs.readdirSync(srcConvsDir)) {
+      if (file.endsWith('.db')) {
+        checkpointSqliteDb(path.join(srcConvsDir, file));
+      }
+    }
+  }
+
   const convCount = copyMatchingFiles(
-    path.join(clientDir, 'conversations'),
+    srcConvsDir,
     outConversations,
     f => f.endsWith('.db')
   );
@@ -330,6 +394,9 @@ function importClientStore(inDir, clientDir, options = {}) {
   const indexData = JSON.parse(fs.readFileSync(indexJsonPath, 'utf8'));
   const localSummaryDb = path.join(clientDir, 'conversation_summaries.db');
   const mergeStats = importAndMergeSummaries(localSummaryDb, indexData, options);
+  if (mergeStats.added > 0 || mergeStats.updated > 0) {
+    syncClientProtoSummaries(clientDir, localSummaryDb);
+  }
 
   const copiedDbCount = copyConversationDbs(
     path.join(inDir, 'conversations'),

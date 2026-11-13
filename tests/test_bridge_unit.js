@@ -106,12 +106,20 @@ try {
   assert(fs.existsSync(path.join(cliDir, 'conversations', 'desk-1.db')));
   assert(fs.existsSync(path.join(cliDir, 'brain', 'desk-1', 'notes.md')));
 
-  // 3. Re-running bridge should be idempotent (zero diff)
+  // 3. Re-running bridge should be idempotent (zero diff) and NOT copy unrelated DB/brain files
+  fs.writeFileSync(path.join(cliDir, 'conversations', 'unindexed-only.db'), 'unindexed-cli');
   const diffAfter = getBridgeDiff(desktopDir, cliDir);
   assert.strictEqual(diffAfter.desktopOnly.length, 0);
   assert.strictEqual(diffAfter.cliOnly.length, 0);
   assert.strictEqual(diffAfter.newerInCli.length, 0);
   assert.strictEqual(diffAfter.newerInDesktop.length, 0);
+
+  const zeroRes = bridgeLocalClients({ desktopDir, cliDir, backupDir }, { direction: 'both' });
+  assert.strictEqual(zeroRes.cliToDesktop.copiedDbCount, 0);
+  assert.strictEqual(zeroRes.cliToDesktop.copiedBrainCount, 0);
+  assert.strictEqual(zeroRes.desktopToCli.copiedDbCount, 0);
+  assert.strictEqual(zeroRes.desktopToCli.copiedBrainCount, 0);
+  assert(!fs.existsSync(path.join(desktopDir, 'conversations', 'unindexed-only.db')));
 
   console.log('All bridge.js unit tests passed successfully! 🎉');
 } finally {
