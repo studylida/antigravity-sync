@@ -5,6 +5,11 @@ All notable changes to `antigravity-sync` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (`MAJOR.MINOR.PATCH`).
 
+## [2.0.1] - 2026-11-13
+
+### Fixed
+- **Process Safety**: Automatically stop running Antigravity Desktop and `agy` CLI processes before sync commands when not using `--force`.
+
 ## [2.0.0] - 2026-11-13
 
 ### Breaking Changes

@@ -1,4 +1,9 @@
-import { parseWindowsTasklistCsv, parsePosixProcessList } from '../src/process.js';
+import {
+  parseWindowsTasklistCsv,
+  parsePosixProcessList,
+  stopAntigravityProcesses,
+  assertAntigravitySafe
+} from '../src/process.js';
 import { TOOL_VERSION, SYNC_SCHEMA_VERSION } from '../src/version.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -38,5 +43,57 @@ const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'),
 assert.strictEqual(TOOL_VERSION, pkg.version);
 assert.strictEqual(SYNC_SCHEMA_VERSION, 2);
 assert(/^\d+\.\d+\.\d+$/.test(TOOL_VERSION), 'TOOL_VERSION must follow SemVer MAJOR.MINOR.PATCH');
+
+// 4. Auto-stop running Antigravity processes on Windows (graceful then force)
+{
+  const calls = [];
+  let pollCount = 0;
+  const res = stopAntigravityProcesses(
+    { desktop: true, cli: false },
+    {
+      platform: 'win32',
+      sleepSync: () => {},
+      execFileSync: (cmd, args) => {
+        calls.push([cmd, ...args]);
+      },
+      getRunningProcesses: () => {
+        pollCount++;
+        // Initial + 6 graceful polls stay running, then after /F kill it stops
+        return { desktop: pollCount <= 8, cli: false };
+      }
+    }
+  );
+  assert.deepStrictEqual(res, {
+    stopped: ['Antigravity Desktop (Antigravity.exe)'],
+    remaining: []
+  });
+  assert.deepStrictEqual(calls[0], ['taskkill', '/IM', 'Antigravity.exe', '/T']);
+  assert.deepStrictEqual(calls[1], ['taskkill', '/F', '/T', '/IM', 'Antigravity.exe']);
+}
+
+// 5. assertAntigravitySafe stops running processes and throws if still remaining
+{
+  let stoppedCalled = false;
+  assertAntigravitySafe(false, { desktop: true, cli: true }, {
+    getRunningProcesses: () => ({ desktop: true, cli: false }),
+    stopAntigravityProcesses: () => {
+      stoppedCalled = true;
+      return { stopped: ['Antigravity Desktop (Antigravity.exe)'], remaining: [] };
+    }
+  });
+  assert.strictEqual(stoppedCalled, true);
+
+  assert.throws(
+    () =>
+      assertAntigravitySafe(false, { desktop: true, cli: true }, {
+        getRunningProcesses: () => ({ desktop: true, cli: false }),
+        stopAntigravityProcesses: () => ({
+          stopped: [],
+          remaining: ['Antigravity Desktop (Antigravity.exe)']
+        })
+      }),
+    /자동으로 종료하지 못했습니다/
+  );
+}
 
 console.log('All process.js and version.js unit tests passed successfully! 🎉');
