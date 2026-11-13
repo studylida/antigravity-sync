@@ -74,13 +74,123 @@ export function isAntigravityRunning(targets = { desktop: true, cli: true }) {
   return Boolean((targets.desktop !== false && running.desktop) || (targets.cli !== false && running.cli));
 }
 
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /**
- * Throws or warns if targeted Antigravity processes are active.
- * @param {boolean} force If true, only warns instead of blocking.
+ * Attempts to terminate targeted Antigravity processes gracefully, then forcefully if needed.
  * @param {{ desktop?: boolean, cli?: boolean }} targets
+ * @param {object} [deps] Optional overrides for testing.
+ * @returns {{ stopped: string[], remaining: string[] }}
  */
-export function assertAntigravitySafe(force = false, targets = { desktop: true, cli: true }) {
-  const running = getRunningProcesses();
+export function stopAntigravityProcesses(targets = { desktop: true, cli: true }, deps = {}) {
+  const platform = deps.platform || os.platform();
+  const execFn = deps.execFileSync || execFileSync;
+  const getRunningFn = deps.getRunningProcesses || getRunningProcesses;
+  const sleepFn = deps.sleepSync || sleepSync;
+
+  const initial = getRunningFn();
+  const stopDesktop = targets.desktop !== false && initial.desktop;
+  const stopCli = targets.cli !== false && initial.cli;
+
+  if (!stopDesktop && !stopCli) {
+    return { stopped: [], remaining: [] };
+  }
+
+  const runKill = (cmd, args) => {
+    try {
+      execFn(cmd, args, { stdio: 'ignore' });
+    } catch {
+      // Ignore errors when process already exited or partial tree termination occurs
+    }
+  };
+
+  if (platform === 'win32') {
+    const images = [];
+    if (stopDesktop) images.push('Antigravity.exe');
+    if (stopCli) images.push('agy.exe');
+
+    // Try graceful termination first so SQLite WAL can flush cleanly
+    for (const img of images) {
+      runKill('taskkill', ['/IM', img, '/T']);
+    }
+
+    for (let i = 0; i < 6; i++) {
+      sleepFn(250);
+      const curr = getRunningFn();
+      const stillDesktop = stopDesktop && curr.desktop;
+      const stillCli = stopCli && curr.cli;
+      if (!stillDesktop && !stillCli) break;
+    }
+
+    // Force-kill any remaining targeted processes (e.g., tray/background helpers)
+    const afterGraceful = getRunningFn();
+    if (stopDesktop && afterGraceful.desktop) {
+      runKill('taskkill', ['/F', '/T', '/IM', 'Antigravity.exe']);
+    }
+    if (stopCli && afterGraceful.cli) {
+      runKill('taskkill', ['/F', '/T', '/IM', 'agy.exe']);
+    }
+  } else {
+    if (stopDesktop) {
+      runKill('pkill', ['-x', 'Antigravity']);
+      runKill('pkill', ['-x', 'antigravity']);
+    }
+    if (stopCli) {
+      runKill('pkill', ['-x', 'agy']);
+    }
+
+    for (let i = 0; i < 6; i++) {
+      sleepFn(250);
+      const curr = getRunningFn();
+      const stillDesktop = stopDesktop && curr.desktop;
+      const stillCli = stopCli && curr.cli;
+      if (!stillDesktop && !stillCli) break;
+    }
+
+    const afterGraceful = getRunningFn();
+    if (stopDesktop && afterGraceful.desktop) {
+      runKill('pkill', ['-9', '-x', 'Antigravity']);
+      runKill('pkill', ['-9', '-x', 'antigravity']);
+    }
+    if (stopCli && afterGraceful.cli) {
+      runKill('pkill', ['-9', '-x', 'agy']);
+    }
+  }
+
+  // Wait briefly for OS process table to settle
+  let finalState = getRunningFn();
+  for (let i = 0; i < 12; i++) {
+    const stillDesktop = stopDesktop && finalState.desktop;
+    const stillCli = stopCli && finalState.cli;
+    if (!stillDesktop && !stillCli) break;
+    sleepFn(250);
+    finalState = getRunningFn();
+  }
+
+  const stopped = [];
+  const remaining = [];
+  if (stopDesktop) {
+    (finalState.desktop ? remaining : stopped).push('Antigravity Desktop (Antigravity.exe)');
+  }
+  if (stopCli) {
+    (finalState.cli ? remaining : stopped).push('Antigravity CLI (agy)');
+  }
+
+  return { stopped, remaining };
+}
+
+/**
+ * Stops targeted Antigravity processes if running (unless force=true, which only warns).
+ * @param {boolean} force If true, only warns instead of stopping/blocking.
+ * @param {{ desktop?: boolean, cli?: boolean }} targets
+ * @param {object} [deps] Optional overrides for testing.
+ */
+export function assertAntigravitySafe(force = false, targets = { desktop: true, cli: true }, deps = {}) {
+  const getRunningFn = deps.getRunningProcesses || getRunningProcesses;
+  const stopFn = deps.stopAntigravityProcesses || ((t) => stopAntigravityProcesses(t, deps));
+  const running = getRunningFn();
   const activeLabels = [];
   if (targets.desktop !== false && running.desktop) {
     activeLabels.push('Antigravity Desktop (Antigravity.exe)');
@@ -91,15 +201,24 @@ export function assertAntigravitySafe(force = false, targets = { desktop: true, 
 
   if (activeLabels.length === 0) return;
 
-  const msg = [
-    `⚠️  실행 중인 Antigravity 프로세스가 감지되었습니다: ${activeLabels.join(', ')}`,
-    '   앱이나 CLI가 켜져 있을 때 DB 파일을 수정하면 WAL 파일 잠금(Lock) 또는 데이터 손상이 발생할 수 있습니다.',
-    '   안내: 데스크톱 창을 닫았더라도 시스템 트레이(작업표시줄)에서 실행 중일 수 있습니다.',
-    '   실행 중인 앱/CLI를 완전히 종료한 후 다시 시도하거나, 강제 진행하려면 --force 옵션을 사용하세요.'
-  ].join('\n');
-
-  if (!force) {
-    throw new Error(msg);
+  if (force) {
+    console.warn([
+      `⚠️  실행 중인 Antigravity 프로세스가 감지되었습니다: ${activeLabels.join(', ')}`,
+      '   --force 옵션으로 프로세스를 종료하지 않고 계속 진행합니다.'
+    ].join('\n'));
+    return;
   }
-  console.warn(msg);
+
+  console.log(`⚠️  실행 중인 Antigravity 프로세스가 감지되었습니다: ${activeLabels.join(', ')}`);
+  console.log('   안전한 DB 작업을 위해 실행 중인 프로세스를 자동으로 종료한 후 진행합니다...');
+
+  const { remaining } = stopFn(targets);
+  if (remaining.length > 0) {
+    throw new Error([
+      `⚠️  Antigravity 프로세스를 자동으로 종료하지 못했습니다: ${remaining.join(', ')}`,
+      '   직접 작업 관리자 등에서 완전히 종료한 후 다시 시도하거나, 강제 진행하려면 --force 옵션을 사용하세요.'
+    ].join('\n'));
+  }
+
+  console.log('✅ Antigravity 프로세스 종료 완료. 작업을 계속합니다.');
 }
