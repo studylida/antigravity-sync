@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { exportSummaries, importAndMergeSummaries } from './db.js';
 import { createSnapshot, copyConversationDbs, copyBrainDirs } from './storage.js';
+import { syncClientProtoSummaries } from './proto_summaries.js';
 
 function isRecordNewer(candidate, baseline) {
   const candTime = new Date(candidate.last_modified_time).getTime();
@@ -141,21 +142,19 @@ export function bridgeLocalClients(cfg, options = {}) {
       targetHome: home,
       transformRow: transformCliRowForDesktop
     });
+    if (mergeStats.added > 0 || mergeStats.updated > 0) {
+      syncClientProtoSummaries(desktopDir, desktopDbPath);
+    }
     const targetIds = new Set([
       ...diff.cliOnly.map(c => c.conversation_id),
       ...diff.newerInCli.map(c => c.conversation_id)
     ]);
-    const copiedDbCount = copyConversationDbs(
-      path.join(cliDir, 'conversations'),
-      path.join(desktopDir, 'conversations'),
-      targetIds.size > 0 ? targetIds : null
-    );
-    const copiedBrainCount = copyBrainDirs(
-      path.join(cliDir, 'brain'),
-      path.join(desktopDir, 'brain'),
-      null,
-      targetIds.size > 0 ? targetIds : null
-    );
+    const copiedDbCount = targetIds.size > 0
+      ? copyConversationDbs(path.join(cliDir, 'conversations'), path.join(desktopDir, 'conversations'), targetIds)
+      : 0;
+    const copiedBrainCount = targetIds.size > 0
+      ? copyBrainDirs(path.join(cliDir, 'brain'), path.join(desktopDir, 'brain'), null, targetIds)
+      : 0;
     cliToDesktop = { mergeStats, copiedDbCount, copiedBrainCount };
   }
 
@@ -166,21 +165,19 @@ export function bridgeLocalClients(cfg, options = {}) {
       includeParentsTable: true,
       transformRow: transformDesktopRowForCli
     });
+    if (mergeStats.added > 0 || mergeStats.updated > 0) {
+      syncClientProtoSummaries(cliDir, cliDbPath);
+    }
     const targetIds = new Set([
       ...diff.desktopOnly.map(c => c.conversation_id),
       ...diff.newerInDesktop.map(c => c.conversation_id)
     ]);
-    const copiedDbCount = copyConversationDbs(
-      path.join(desktopDir, 'conversations'),
-      path.join(cliDir, 'conversations'),
-      targetIds.size > 0 ? targetIds : null
-    );
-    const copiedBrainCount = copyBrainDirs(
-      path.join(desktopDir, 'brain'),
-      path.join(cliDir, 'brain'),
-      null,
-      targetIds.size > 0 ? targetIds : null
-    );
+    const copiedDbCount = targetIds.size > 0
+      ? copyConversationDbs(path.join(desktopDir, 'conversations'), path.join(cliDir, 'conversations'), targetIds)
+      : 0;
+    const copiedBrainCount = targetIds.size > 0
+      ? copyBrainDirs(path.join(desktopDir, 'brain'), path.join(cliDir, 'brain'), null, targetIds)
+      : 0;
     desktopToCli = { mergeStats, copiedDbCount, copiedBrainCount };
   }
 

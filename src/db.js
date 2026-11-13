@@ -45,6 +45,27 @@ function tableExists(db, tableName) {
 }
 
 /**
+ * Flushes SQLite WAL into the main database file so file copies see consistent committed state.
+ */
+export function checkpointSqliteDb(dbPath) {
+  if (!dbPath || !fs.existsSync(dbPath) || !fs.existsSync(`${dbPath}-wal`)) {
+    return false;
+  }
+  let db = null;
+  try {
+    db = new DatabaseSync(dbPath);
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (db) {
+      try { db.close(); } catch {}
+    }
+  }
+}
+
+/**
  * Ensures conversation_summaries.db exists with valid schema.
  * Optionally creates conversation_parents table (used by Antigravity CLI).
  */
@@ -232,6 +253,9 @@ export function importAndMergeSummaries(dbPath, indexData, options = {}) {
     }
 
     db.exec('COMMIT');
+    try {
+      db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+    } catch {}
     return {
       added,
       updated,
