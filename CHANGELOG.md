@@ -5,6 +5,11 @@ All notable changes to `antigravity-sync` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (`MAJOR.MINOR.PATCH`).
 
+## [2.0.2] - 2026-11-13
+
+### Fixed
+- **Git Sync Hygiene**: Avoid nested `.git` directories inside `sync-data/`, suppress CRLF warnings via `.gitattributes` (`* -text`), and raise `git push` `maxBuffer` limits.
+
 ## [2.0.1] - 2026-11-13
 
 ### Fixed

@@ -2,18 +2,47 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-function runGit(args, cwd, timeout = 45000) {
+function runGit(args, cwd, timeout = 180000) {
   try {
     return execFileSync('git', args, {
       cwd,
       encoding: 'utf8',
       timeout,
+      maxBuffer: 50 * 1024 * 1024,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
       stdio: ['ignore', 'pipe', 'pipe']
     }).trim();
   } catch (err) {
     const stderr = err.stderr ? err.stderr.toString().trim() : '';
     throw new Error(`Git error (git ${args.join(' ')}): ${stderr || err.message}`);
+  }
+}
+
+function removeNestedGitDirs(rootDir) {
+  if (!fs.existsSync(rootDir)) return;
+  const stack = [];
+  for (const entry of fs.readdirSync(rootDir, { withFileTypes: true })) {
+    if (entry.isDirectory() && entry.name !== '.git') {
+      stack.push(path.join(rootDir, entry.name));
+    }
+  }
+  while (stack.length > 0) {
+    const current = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const fullPath = path.join(current, entry.name);
+      if (entry.name === '.git') {
+        fs.rmSync(fullPath, { recursive: true, force: true });
+      } else {
+        stack.push(fullPath);
+      }
+    }
   }
 }
 
@@ -46,6 +75,11 @@ export function initGitRepo(dir, remoteUrl = '') {
     runGit(['config', 'user.email'], dir);
   } catch {
     runGit(['config', 'user.email', 'sync@antigravity.local'], dir);
+  }
+  try {
+    runGit(['config', 'core.autocrlf', 'false'], dir);
+  } catch {
+    // Ignore if config fails
   }
 
   // Create default .gitignore
@@ -98,7 +132,13 @@ export function gitPull(dir) {
 export function gitCommitAndPush(dir, commitMessage = 'Auto sync by antigravity-sync') {
   if (!isGitRepo(dir)) return { committed: false, pushed: false };
 
-  runGit(['add', '-A'], dir);
+  try {
+    runGit(['config', 'core.autocrlf', 'false'], dir);
+  } catch {
+    // Ignore
+  }
+  removeNestedGitDirs(dir);
+  runGit(['add', '-A'], dir, 300000);
 
   // Check if anything is staged
   try {
@@ -109,12 +149,12 @@ export function gitCommitAndPush(dir, commitMessage = 'Auto sync by antigravity-
     // There are changes
   }
 
-  runGit(['commit', '-m', commitMessage], dir);
+  runGit(['commit', '-m', commitMessage], dir, 300000);
 
   let pushed = false;
   try {
     runGit(['remote', 'get-url', 'origin'], dir);
-    runGit(['push', '-u', 'origin', 'HEAD'], dir);
+    runGit(['push', '-u', 'origin', 'HEAD'], dir, 300000);
     pushed = true;
   } catch (err) {
     console.warn(`[Git] Push skipped or failed: ${err.message}`);
