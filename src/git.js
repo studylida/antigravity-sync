@@ -55,6 +55,56 @@ export function isGitAvailable() {
   }
 }
 
+export function isGhAvailable() {
+  try {
+    execFileSync('gh', ['auth', 'status'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ensures a private GitHub repository exists for sync and returns its clone URL.
+ * @param {string} repoName
+ * @returns {string}
+ */
+export function ensureGithubSyncRepo(repoName = 'antigravity-sync-data') {
+  const execOpts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000 };
+  const owner = execFileSync('gh', ['api', 'user', '--jq', '.login'], execOpts).trim();
+  const fullName = owner ? `${owner}/${repoName}` : repoName;
+
+  let protocol = 'https';
+  try {
+    const p = execFileSync('gh', ['config', 'get', 'git_protocol'], execOpts).trim();
+    if (p === 'ssh') protocol = 'ssh';
+  } catch {
+    // default https
+  }
+
+  const formatRepoUrl = (jsonStr) => {
+    const data = JSON.parse(jsonStr);
+    if (protocol === 'ssh' && data.sshUrl) return data.sshUrl;
+    return data.url ? `${data.url}.git` : '';
+  };
+
+  try {
+    const existing = execFileSync('gh', ['repo', 'view', fullName, '--json', 'url,sshUrl'], execOpts).trim();
+    const url = formatRepoUrl(existing);
+    if (url) return url;
+  } catch {
+    // Repo does not exist yet; create it as private
+  }
+
+  execFileSync('gh', ['repo', 'create', fullName, '--private', '--description', 'Antigravity Sync private backup repository'], execOpts);
+  const created = execFileSync('gh', ['repo', 'view', fullName, '--json', 'url,sshUrl'], execOpts).trim();
+  const url = formatRepoUrl(created);
+  if (!url) {
+    throw new Error(`GitHub 저장소 URL을 가져오지 못했습니다: ${fullName}`);
+  }
+  return url;
+}
+
 export function isGitRepo(dir) {
   return fs.existsSync(path.join(dir, '.git'));
 }

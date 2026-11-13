@@ -10,7 +10,7 @@ import {
   loadConfig,
   saveConfig
 } from '../config.js';
-import { isGitAvailable, initGitRepo } from '../git.js';
+import { isGitAvailable, isGhAvailable, ensureGithubSyncRepo, initGitRepo } from '../git.js';
 import { TOOL_VERSION } from '../version.js';
 
 export async function commandInit() {
@@ -62,9 +62,22 @@ export async function commandInit() {
       } else {
         const remotePrompt = gitRemote
           ? `원격 Git 저장소 URL [현재: ${gitRemote}, 유지하려면 엔터]: `
-          : '원격 Git 저장소 URL (예: git@github.com:user/my-repo.git 또는 엔터로 건너뛰기): ';
+          : '원격 Git 저장소 URL (예: git@github.com:user/my-repo.git 또는 엔터 시 GitHub 비공개 저장소 자동 생성): ';
         const remoteAns = (await rl.question(`\n${remotePrompt}`)).trim();
-        if (remoteAns) gitRemote = remoteAns;
+        if (remoteAns) {
+          gitRemote = remoteAns;
+        } else if (!gitRemote) {
+          if (isGhAvailable()) {
+            const autoAns = (await rl.question('GitHub에 비공개 저장소(antigravity-sync-data)를 자동으로 생성/연결할까요? (Y/n) [기본값: Y]: ')).trim().toLowerCase();
+            if (autoAns === '' || autoAns === 'y' || autoAns === 'yes') {
+              console.log('🔄 GitHub 비공개 저장소 확인 및 생성 중...');
+              gitRemote = ensureGithubSyncRepo('antigravity-sync-data');
+              console.log(`✅ GitHub 원격 저장소 연결: ${gitRemote}`);
+            }
+          } else {
+            console.log('ℹ️  GitHub CLI(gh) 로그인이 감지되지 않아 로컬 전용 Git 저장소로 초기화합니다. (추후 원격 저장소 연결 가능)');
+          }
+        }
 
         const syncDirAns = (await rl.question(`동기화 로컬 작업 폴더 경로 [기본값: ${syncDir}]: `)).trim();
         if (syncDirAns) syncDir = syncDirAns;
