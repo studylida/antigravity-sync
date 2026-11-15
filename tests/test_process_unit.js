@@ -94,6 +94,27 @@ assert(/^\d+\.\d+\.\d+$/.test(TOOL_VERSION), 'TOOL_VERSION must follow SemVer MA
       }),
     /자동으로 종료하지 못했습니다/
   );
+
+  assert.throws(
+    () =>
+      assertAntigravitySafe(false, { desktop: true, cli: true }, {
+        getRunningProcesses: () => ({ desktop: true, cli: false }),
+        getAncestorProcessNames: () => ['powershell.exe', 'antigravity.exe']
+      }),
+    /내부 터미널/
+  );
+}
+
+// 6. CLI option parsing unit tests
+import { parseOptions } from '../bin/agy-sync.js';
+{
+  const parsed = parseOptions(['--force', '--target=cli', 'snapshot_2026-11-13']);
+  assert.strictEqual(parsed.options.force, true);
+  assert.strictEqual(parsed.options.target, 'cli');
+  assert.deepStrictEqual(parsed.positionals, ['snapshot_2026-11-13']);
+
+  assert.throws(() => parseOptions(['--unknown-flag']), /알 수 없는 옵션/);
+  assert.throws(() => parseOptions(['--target']), /값이 필요합니다/);
 }
 
 console.log('All process.js and version.js unit tests passed successfully! 🎉');

@@ -32,6 +32,86 @@ export function parsePosixProcessList(psText) {
 }
 
 /**
+ * Inspects running Windows language_server.exe instances to classify orphaned
+ * Antigravity Desktop vs CLI sidecars holding SQLite DB locks.
+ */
+export function getWindowsLanguageServerPids() {
+  const result = { desktopPids: [], cliPids: [] };
+  if (os.platform() !== 'win32') return result;
+
+  try {
+    const psCmd = "Get-CimInstance Win32_Process -Filter \"Name='language_server.exe'\" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress";
+    const out = execFileSync('powershell.exe', ['-NoProfile', '-Command', psCmd], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5000
+    }).trim();
+    if (!out) return result;
+
+    const parsed = JSON.parse(out);
+    const items = Array.isArray(parsed) ? parsed : [parsed];
+    for (const item of items) {
+      const cmd = (item?.CommandLine || '').toLowerCase();
+      const pid = Number(item?.ProcessId);
+      if (!pid || !cmd) continue;
+      if (/--app_data_dir[=\s]+["']?[^"'\s]*antigravity-cli\b/.test(cmd)) {
+        result.cliPids.push(pid);
+      } else if (/--app_data_dir[=\s]+["']?[^"'\s]*antigravity\b/.test(cmd)) {
+        result.desktopPids.push(pid);
+      }
+    }
+  } catch {
+    // Ignore PowerShell/CIM failures
+  }
+  return result;
+}
+
+/**
+ * Returns lowercased ancestor process names for the current process, so we can avoid
+ * terminating the terminal host we are currently running inside.
+ */
+export function getAncestorProcessNames() {
+  const platform = os.platform();
+  try {
+    if (platform === 'win32') {
+      const psCmd = `$m=@{}; Get-CimInstance Win32_Process | ForEach-Object { $m[[int]$_.ProcessId]=@([int]$_.ParentProcessId,$_.Name) }; $cur=${process.pid}; $res=@(); for($i=0;$i-lt 24;$i++){ if(-not $m.ContainsKey($cur)){break}; $p=$m[$cur][0]; if(-not $m.ContainsKey($p)){break}; $res+=$m[$p][1]; if($p -eq $cur){break}; $cur=$p }; $res | ConvertTo-Json -Compress`;
+      const out = execFileSync('powershell.exe', ['-NoProfile', '-Command', psCmd], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 5000
+      }).trim();
+      if (!out) return [];
+      const parsed = JSON.parse(out);
+      const list = Array.isArray(parsed) ? parsed : [parsed];
+      return list.filter(Boolean).map(n => String(n).toLowerCase());
+    } else {
+      const out = execFileSync('ps', ['-eo', 'pid=,ppid=,comm='], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 5000
+      });
+      const procMap = new Map();
+      for (const line of out.split(/\r?\n/)) {
+        const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
+        if (m) procMap.set(Number(m[1]), { ppid: Number(m[2]), comm: path.basename(m[3].trim()).toLowerCase() });
+      }
+      const res = [];
+      let cur = process.pid;
+      for (let i = 0; i < 24; i++) {
+        const node = procMap.get(cur);
+        if (!node || !procMap.has(node.ppid) || node.ppid === cur) break;
+        const parent = procMap.get(node.ppid);
+        res.push(parent.comm);
+        cur = node.ppid;
+      }
+      return res;
+    }
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Checks whether Antigravity Desktop and/or Antigravity CLI (`agy`) are running.
  * @returns {{ desktop: boolean, cli: boolean }}
  */
@@ -44,10 +124,14 @@ export function getRunningProcesses() {
         stdio: ['ignore', 'pipe', 'ignore']
       });
       const names = new Set(parseWindowsTasklistCsv(out));
-      return {
-        desktop: names.has('antigravity.exe'),
-        cli: names.has('agy.exe')
-      };
+      let desktop = names.has('antigravity.exe');
+      let cli = names.has('agy.exe');
+      if (names.has('language_server.exe') && (!desktop || !cli)) {
+        const lsPids = getWindowsLanguageServerPids();
+        if (lsPids.desktopPids.length > 0) desktop = true;
+        if (lsPids.cliPids.length > 0) cli = true;
+      }
+      return { desktop, cli };
     } else {
       const out = execFileSync('ps', ['-eo', 'comm'], {
         encoding: 'utf8',
@@ -132,6 +216,18 @@ export function stopAntigravityProcesses(targets = { desktop: true, cli: true },
     if (stopCli && afterGraceful.cli) {
       runKill('taskkill', ['/F', '/T', '/IM', 'agy.exe']);
     }
+
+    // Also terminate orphaned language_server.exe instances still holding DB locks
+    if (!deps.execFileSync) {
+      const lsPids = getWindowsLanguageServerPids();
+      const targetPids = [
+        ...(stopDesktop ? lsPids.desktopPids : []),
+        ...(stopCli ? lsPids.cliPids : [])
+      ];
+      for (const pid of targetPids) {
+        runKill('taskkill', ['/F', '/PID', String(pid)]);
+      }
+    }
   } else {
     if (stopDesktop) {
       runKill('pkill', ['-x', 'Antigravity']);
@@ -210,6 +306,19 @@ export function assertAntigravitySafe(force = false, targets = { desktop: true, 
   }
 
   console.log(`⚠️  실행 중인 Antigravity 프로세스가 감지되었습니다: ${activeLabels.join(', ')}`);
+
+  if (!deps.stopAntigravityProcesses && (!deps.getRunningProcesses || deps.getAncestorProcessNames)) {
+    const ancestors = (deps.getAncestorProcessNames || getAncestorProcessNames)();
+    const insideDesktop = targets.desktop !== false && (ancestors.includes('antigravity.exe') || ancestors.includes('antigravity'));
+    const insideCli = targets.cli !== false && (ancestors.includes('agy.exe') || ancestors.includes('agy'));
+    if (insideDesktop || insideCli) {
+      throw new Error([
+        '⚠️  현재 Antigravity 내부 터미널에서 실행 중이므로 프로세스를 자동으로 종료할 수 없습니다.',
+        '   Antigravity 창과 시스템 트레이를 직접 종료한 뒤 외부 터미널(PowerShell, Windows Terminal 등)에서 다시 실행하세요.'
+      ].join('\n'));
+    }
+  }
+
   console.log('   안전한 DB 작업을 위해 실행 중인 프로세스를 자동으로 종료한 후 진행합니다...');
 
   const { remaining } = stopFn(targets);

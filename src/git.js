@@ -126,13 +126,10 @@ export function initGitRepo(dir, remoteUrl = '') {
   } catch {
     runGit(['config', 'user.email', 'sync@antigravity.local'], dir);
   }
-  try {
-    runGit(['config', 'core.autocrlf', 'false'], dir);
-  } catch {
-    // Ignore if config fails
-  }
 
-  // Create default .gitignore
+  ensureGitConfigAndAttributes(dir);
+
+  // Create default .gitignore and .gitattributes
   const gitignorePath = path.join(dir, '.gitignore');
   if (!fs.existsSync(gitignorePath)) {
     fs.writeFileSync(gitignorePath, [
@@ -158,6 +155,62 @@ export function initGitRepo(dir, remoteUrl = '') {
   }
 }
 
+function ensureGitConfigAndAttributes(dir) {
+  for (const [key, val] of [
+    ['core.autocrlf', 'false'],
+    ['core.safecrlf', 'false'],
+    ['core.longpaths', 'true']
+  ]) {
+    try {
+      runGit(['config', key, val], dir);
+    } catch {
+      // Ignore if config fails
+    }
+  }
+
+  const gitattributesPath = path.join(dir, '.gitattributes');
+  if (!fs.existsSync(gitattributesPath)) {
+    fs.writeFileSync(gitattributesPath, '* -text\n', 'utf8');
+  }
+}
+
+function getRemoteBranchInfo(dir) {
+  let lsHeads = '';
+  try {
+    lsHeads = runGit(['ls-remote', '--heads', 'origin'], dir);
+  } catch {
+    return { empty: false, defaultBranch: null, branches: new Set() };
+  }
+
+  const branches = new Set();
+  for (const line of lsHeads.split(/\r?\n/)) {
+    const m = line.match(/refs\/heads\/(.+)$/);
+    if (m) branches.add(m[1].trim());
+  }
+  if (branches.size === 0) {
+    return { empty: true, defaultBranch: null, branches };
+  }
+
+  let defaultBranch = null;
+  try {
+    const symref = runGit(['ls-remote', '--symref', 'origin', 'HEAD'], dir);
+    const m = symref.match(/ref:\s*refs\/heads\/([^\s]+)/);
+    if (m && branches.has(m[1])) {
+      defaultBranch = m[1];
+    }
+  } catch {
+    // Fallback below
+  }
+
+  if (!defaultBranch) {
+    if (branches.has('main')) defaultBranch = 'main';
+    else if (branches.has('master')) defaultBranch = 'master';
+    else defaultBranch = [...branches][0];
+  }
+
+  return { empty: false, defaultBranch, branches };
+}
+
 export function gitPull(dir) {
   if (!isGitRepo(dir)) return { pulled: false, reason: 'not_git_repo' };
 
@@ -167,26 +220,76 @@ export function gitPull(dir) {
     return { pulled: false, reason: 'no_remote' };
   }
 
+  ensureGitConfigAndAttributes(dir);
+
+  const remoteInfo = getRemoteBranchInfo(dir);
+  if (remoteInfo.empty) {
+    return { pulled: false, reason: 'remote_empty' };
+  }
+
+  let currentBranch = '';
   try {
-    const out = runGit(['pull', '--rebase', 'origin', 'main'], dir);
-    return { pulled: true, output: out };
+    currentBranch = runGit(['branch', '--show-current'], dir);
+  } catch {
+    currentBranch = '';
+  }
+
+  const targetBranch = (currentBranch && remoteInfo.branches.has(currentBranch))
+    ? currentBranch
+    : (remoteInfo.defaultBranch || currentBranch || 'main');
+
+  let hasHead = false;
+  try {
+    execFileSync('git', ['rev-parse', '--verify', 'HEAD'], { cwd: dir, stdio: 'ignore' });
+    hasHead = true;
+  } catch {
+    hasHead = false;
+  }
+
+  if (!hasHead) {
+    try {
+      runGit(['fetch', 'origin', targetBranch], dir, 300000);
+      const out = runGit(['checkout', '-f', '-B', targetBranch, `origin/${targetBranch}`], dir, 300000);
+      ensureGitConfigAndAttributes(dir);
+      return { pulled: true, output: out, branch: targetBranch };
+    } catch (err) {
+      if (err.message.includes('couldn\'t find remote ref') || err.message.includes('fatal: couldn\'t find remote')) {
+        return { pulled: false, reason: 'remote_empty' };
+      }
+      throw err;
+    }
+  }
+
+  let stashed = false;
+  const dirtyStatus = runGit(['status', '--porcelain'], dir);
+  if (dirtyStatus) {
+    runGit(['stash', 'push', '--include-untracked', '-m', 'agy-sync-auto-stash'], dir, 300000);
+    stashed = true;
+  }
+
+  try {
+    const out = runGit(['pull', '--rebase', 'origin', targetBranch], dir, 300000);
+    return { pulled: true, output: out, branch: targetBranch };
   } catch (err) {
-    // If branch doesn't exist yet on remote, that's okay
     if (err.message.includes('couldn\'t find remote ref') || err.message.includes('fatal: couldn\'t find remote')) {
       return { pulled: false, reason: 'remote_empty' };
     }
     throw err;
+  } finally {
+    if (stashed) {
+      try {
+        runGit(['stash', 'pop'], dir, 300000);
+      } catch (stashErr) {
+        console.warn(`[Git] Auto-stash restore had conflicts (stash preserved in git stash list): ${stashErr.message}`);
+      }
+    }
   }
 }
 
 export function gitCommitAndPush(dir, commitMessage = 'Auto sync by antigravity-sync') {
   if (!isGitRepo(dir)) return { committed: false, pushed: false };
 
-  try {
-    runGit(['config', 'core.autocrlf', 'false'], dir);
-  } catch {
-    // Ignore
-  }
+  ensureGitConfigAndAttributes(dir);
   removeNestedGitDirs(dir);
   runGit(['add', '-A'], dir, 300000);
 
@@ -201,23 +304,34 @@ export function gitCommitAndPush(dir, commitMessage = 'Auto sync by antigravity-
 
   runGit(['commit', '-m', commitMessage], dir, 300000);
 
-  let pushed = false;
+  let hasRemote = false;
   try {
     runGit(['remote', 'get-url', 'origin'], dir);
-    runGit(['push', '-u', 'origin', 'HEAD'], dir, 300000);
-    pushed = true;
-  } catch (err) {
-    console.warn(`[Git] Push skipped or failed: ${err.message}`);
+    hasRemote = true;
+  } catch {
+    hasRemote = false;
   }
 
-  return { committed: true, pushed };
+  if (!hasRemote) {
+    return { committed: true, pushed: false, reason: 'no_remote' };
+  }
+
+  runGit(['push', '-u', 'origin', 'HEAD'], dir, 300000);
+  return { committed: true, pushed: true };
 }
 
 export function getGitStatus(dir) {
   if (!isGitRepo(dir)) return null;
   try {
     const status = runGit(['status', '--short'], dir);
-    const branch = runGit(['branch', '--show-current'], dir);
+    let branch = runGit(['branch', '--show-current'], dir);
+    if (!branch) {
+      try {
+        branch = runGit(['symbolic-ref', '--short', 'HEAD'], dir);
+      } catch {
+        branch = 'HEAD (detached)';
+      }
+    }
     let remote = '';
     try {
       remote = runGit(['remote', 'get-url', 'origin'], dir);

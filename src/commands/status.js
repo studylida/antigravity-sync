@@ -5,6 +5,7 @@ import { getRunningProcesses } from '../process.js';
 import { exportSummaries } from '../db.js';
 import { getBridgeDiff } from '../bridge.js';
 import { isGitRepo, getGitStatus } from '../git.js';
+import { listSnapshots } from '../storage.js';
 import { TOOL_VERSION } from '../version.js';
 
 function readIndexConversations(indexPath) {
@@ -35,6 +36,9 @@ export async function commandStatus() {
   const cfg = loadConfig();
   console.log(`\n📊 Antigravity Sync v${TOOL_VERSION} 상태 보고서`);
   console.log('==================================================');
+  if (!cfg.configured) {
+    console.log('⚠️  아직 초기 설정(agy-sync init)이 완료되지 않아 기본 경로 기준으로 표시합니다.');
+  }
 
   // 1. Process status
   const procs = getRunningProcesses();
@@ -80,6 +84,13 @@ export async function commandStatus() {
     if (gitStatus) {
       console.log(`[Git 상태]      브랜치: ${gitStatus.branch} | 원격: ${gitStatus.remote || '(미설정)'} | 변경: ${gitStatus.hasChanges ? '있음' : '없음'}`);
     }
+  }
+
+  const snapshots = listSnapshots(cfg.backupDir);
+  if (snapshots.length > 0) {
+    console.log(`[백업 스냅샷]   ${snapshots.length}개 보유 (최신: ${snapshots[0].name})`);
+  } else {
+    console.log('[백업 스냅샷]   없음');
   }
 
   console.log('--------------------------------------------------');

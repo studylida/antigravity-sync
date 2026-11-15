@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { commandInit } from '../src/commands/init.js';
 import { commandPush } from '../src/commands/push.js';
 import { commandPull } from '../src/commands/pull.js';
@@ -53,7 +55,7 @@ Examples:
 `);
 }
 
-function parseOptions(argList) {
+export function parseOptions(argList) {
   const options = {
     force: false,
     message: '',
@@ -62,26 +64,50 @@ function parseOptions(argList) {
     dryRun: false,
     autoYes: false
   };
+  const positionals = [];
+
+  const consumeValue = (arg, nextVal, eqVal) => {
+    if (eqVal !== null) {
+      if (!eqVal) throw new Error(`옵션 "${arg}"에 값이 필요합니다.`);
+      return { value: eqVal, consumedNext: false };
+    }
+    if (!nextVal || nextVal.startsWith('-')) {
+      throw new Error(`옵션 "${arg}"에 값이 필요합니다.`);
+    }
+    return { value: nextVal, consumedNext: true };
+  };
+
   for (let i = 0; i < argList.length; i++) {
-    const arg = argList[i];
-    if (arg === '--force') {
+    const rawArg = argList[i];
+    const eqIdx = rawArg.indexOf('=');
+    const flag = eqIdx !== -1 ? rawArg.slice(0, eqIdx) : rawArg;
+    const eqVal = eqIdx !== -1 ? rawArg.slice(eqIdx + 1) : null;
+
+    if (flag === '--force' && eqVal === null) {
       options.force = true;
-    } else if (arg === '--dry-run') {
+    } else if (flag === '--dry-run' && eqVal === null) {
       options.dryRun = true;
-    } else if (arg === '--auto-yes' || arg === '-y') {
+    } else if ((flag === '--auto-yes' || flag === '-y') && eqVal === null) {
       options.autoYes = true;
-    } else if (arg === '-m' || arg === '--message') {
-      options.message = argList[i + 1] || '';
-      i++;
-    } else if (arg === '--target' || arg === '-t') {
-      options.target = argList[i + 1] || 'all';
-      i++;
-    } else if (arg === '--direction' || arg === '-d') {
-      options.direction = argList[i + 1] || 'both';
-      i++;
+    } else if (flag === '-m' || flag === '--message') {
+      const { value, consumedNext } = consumeValue(flag, argList[i + 1], eqVal);
+      options.message = value;
+      if (consumedNext) i++;
+    } else if (flag === '--target' || flag === '-t') {
+      const { value, consumedNext } = consumeValue(flag, argList[i + 1], eqVal);
+      options.target = value;
+      if (consumedNext) i++;
+    } else if (flag === '--direction' || flag === '-d') {
+      const { value, consumedNext } = consumeValue(flag, argList[i + 1], eqVal);
+      options.direction = value;
+      if (consumedNext) i++;
+    } else if (rawArg.startsWith('-')) {
+      throw new Error(`알 수 없는 옵션입니다: ${rawArg}\n도움말을 보려면 "agy-sync --help"를 실행하세요.`);
+    } else {
+      positionals.push(rawArg);
     }
   }
-  return options;
+  return { options, positionals };
 }
 
 async function main() {
@@ -92,19 +118,19 @@ async function main() {
         break;
 
       case 'bridge': {
-        const options = parseOptions(args.slice(1));
+        const { options } = parseOptions(args.slice(1));
         await commandBridge(options);
         break;
       }
 
       case 'push': {
-        const options = parseOptions(args.slice(1));
+        const { options } = parseOptions(args.slice(1));
         await commandPush(options);
         break;
       }
 
       case 'pull': {
-        const options = parseOptions(args.slice(1));
+        const { options } = parseOptions(args.slice(1));
         await commandPull(options);
         break;
       }
@@ -114,8 +140,8 @@ async function main() {
         break;
 
       case 'restore': {
-        const snapshotName = args[1] && !args[1].startsWith('-') ? args[1] : '';
-        const options = parseOptions(args.slice(1));
+        const { options, positionals } = parseOptions(args.slice(1));
+        const snapshotName = positionals[0] || '';
         await commandRestore(snapshotName, options);
         break;
       }
@@ -141,4 +167,15 @@ async function main() {
   }
 }
 
-main();
+const isMainEntry = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+
+if (isMainEntry) {
+  main();
+}

@@ -5,9 +5,14 @@ import { exportSummaries, importAndMergeSummaries } from './db.js';
 import { createSnapshot, copyConversationDbs, copyBrainDirs } from './storage.js';
 import { syncClientProtoSummaries } from './proto_summaries.js';
 
+function parseTimestampMs(value) {
+  if (!value) return NaN;
+  return new Date(value).getTime();
+}
+
 function isRecordNewer(candidate, baseline) {
-  const candTime = new Date(candidate.last_modified_time).getTime();
-  const baseTime = new Date(baseline.last_modified_time).getTime();
+  const candTime = parseTimestampMs(candidate.last_modified_time);
+  const baseTime = parseTimestampMs(baseline.last_modified_time);
   return (
     (Number.isFinite(candTime) && Number.isFinite(baseTime) && candTime > baseTime) ||
     (candidate.step_count || 0) > (baseline.step_count || 0)
@@ -108,6 +113,9 @@ export function bridgeLocalClients(cfg, options = {}) {
   if (!desktopDir || !cliDir) {
     throw new Error('Desktop 경로와 CLI 경로가 모두 설정되어 있어야 합니다.');
   }
+  if (path.resolve(desktopDir) === path.resolve(cliDir)) {
+    throw new Error('Desktop 경로와 CLI 경로가 동일하여 브리지를 실행할 수 없습니다.');
+  }
 
   const diff = getBridgeDiff(desktopDir, cliDir);
   if (dryRun) {
@@ -172,8 +180,15 @@ export function bridgeLocalClients(cfg, options = {}) {
       ...diff.desktopOnly.map(c => c.conversation_id),
       ...diff.newerInDesktop.map(c => c.conversation_id)
     ]);
-    const copiedDbCount = targetIds.size > 0
-      ? copyConversationDbs(path.join(desktopDir, 'conversations'), path.join(cliDir, 'conversations'), targetIds)
+    // Do NOT place Desktop-native .db files into cliDir/conversations/:
+    // Antigravity Desktop (agyhub) watches antigravity-cli/conversations/ as an additionalDir
+    // and re-tags any .db found there as CORTEX_TRAJECTORY_SOURCE_CLI, wiping Desktop titles/pins.
+    const existingCliConvDir = path.join(cliDir, 'conversations');
+    const safeCliDbTargetIds = new Set(
+      Array.from(targetIds).filter(id => fs.existsSync(path.join(existingCliConvDir, `${id}.db`)))
+    );
+    const copiedDbCount = safeCliDbTargetIds.size > 0
+      ? copyConversationDbs(path.join(desktopDir, 'conversations'), existingCliConvDir, safeCliDbTargetIds)
       : 0;
     const copiedBrainCount = targetIds.size > 0
       ? copyBrainDirs(path.join(desktopDir, 'brain'), path.join(cliDir, 'brain'), null, targetIds)

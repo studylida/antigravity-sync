@@ -34,12 +34,19 @@ export async function commandInit() {
     const geminiConfigDir = configAns.trim() || defaultConfig;
 
     // 2. Sync targets
+    if (desktopDir === cliDir) {
+      console.warn('⚠️  Desktop 경로와 CLI 경로가 동일합니다. 두 클라이언트의 데이터가 섞일 수 있으니 경로를 다시 확인해주세요.');
+    }
     const cliDetected = fs.existsSync(cliDir);
     console.log(`\n[4/5] 동기화 대상 선택 (CLI 폴더 감지됨: ${cliDetected ? '예' : '아니오'}):`);
     console.log('  1) 전체 (Desktop + CLI + Config) [추천]');
     console.log('  2) Desktop + Config만');
     console.log('  3) CLI + Config만');
-    const targetChoice = (await rl.question('선택 (1~3) [기본값: 1]: ')).trim() || '1';
+    let targetChoice = (await rl.question('선택 (1~3) [기본값: 1]: ')).trim() || '1';
+    if (!['1', '2', '3'].includes(targetChoice)) {
+      console.warn(`⚠️  알 수 없는 선택 "${targetChoice}" -> 기본값 1(전체)로 설정합니다.`);
+      targetChoice = '1';
+    }
     const targets = {
       desktop: targetChoice === '1' || targetChoice === '2',
       cli: targetChoice === '1' || targetChoice === '3',
@@ -71,8 +78,14 @@ export async function commandInit() {
             const autoAns = (await rl.question('GitHub에 비공개 저장소(antigravity-sync-data)를 자동으로 생성/연결할까요? (Y/n) [기본값: Y]: ')).trim().toLowerCase();
             if (autoAns === '' || autoAns === 'y' || autoAns === 'yes') {
               console.log('🔄 GitHub 비공개 저장소 확인 및 생성 중...');
-              gitRemote = ensureGithubSyncRepo('antigravity-sync-data');
-              console.log(`✅ GitHub 원격 저장소 연결: ${gitRemote}`);
+              try {
+                gitRemote = ensureGithubSyncRepo('antigravity-sync-data');
+                console.log(`✅ GitHub 원격 저장소 연결: ${gitRemote}`);
+              } catch (ghErr) {
+                console.warn(`⚠️  GitHub 원격 저장소 자동 생성 실패: ${ghErr.message}`);
+                console.warn('   안내: "gh auth login" 또는 "gh auth refresh -s repo"를 실행한 뒤 다시 init하거나, 원격 URL을 직접 입력해주세요.');
+                console.warn('   일단 로컬 Git 저장소로 먼저 초기화합니다.');
+              }
             }
           } else {
             console.log('ℹ️  GitHub CLI(gh) 로그인이 감지되지 않아 로컬 전용 Git 저장소로 초기화합니다. (추후 원격 저장소 연결 가능)');

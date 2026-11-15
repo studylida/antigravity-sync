@@ -89,6 +89,20 @@ importAndMergeSummaries(path.join(mockCli, 'conversation_summaries.db'), {
 }, { includeParentsTable: true, targetHome: 'C:/Users/work' });
 
 fs.writeFileSync(path.join(mockCli, 'conversations', 'cli-conv-1.db'), 'dummy-sqlite-bytes');
+fs.mkdirSync(path.join(mockDesktop, 'annotations'), { recursive: true });
+fs.writeFileSync(path.join(mockDesktop, 'annotations', 'desk-conv-1.pbtxt'), 'pinned: true\n');
+fs.writeFileSync(
+  path.join(mockProjects, 'proj-a.json'),
+  JSON.stringify({
+    name: 'proj-a',
+    extraNotePath: 'C:\\Users\\work\\notes.md',
+    projectResources: {
+      resources: [
+        { gitFolder: { folderUri: 'file:///C:/Users/work/repo-a', gitRemoteUrl: 'https://github.com/example/repo-a.git' } }
+      ]
+    }
+  }, null, 2)
+);
 fs.writeFileSync(
   path.join(mockCli, 'brain', 'cli-conv-1', '.system_generated', 'logs', 'transcript.jsonl'),
   JSON.stringify({ step_index: 0, content: 'C:\\Users\\work\\repo-a' }) + '\n'
@@ -160,9 +174,12 @@ try {
     targets: { desktop: true, cli: true, config: true }
   };
 
-  const importResult = await importFromSyncDir(destCfg, { targetHome: 'C:/Users/home' });
+  const importResult = await importFromSyncDir(destCfg, { targetHome: 'C:/Users/home', autoYes: true });
   assert.strictEqual(importResult.schemaVersion, 2);
   assert.strictEqual(importResult.desktop.mergeStats.added, exportResult.desktop.indexCount);
+  assert(fs.existsSync(path.join(destDesktop, 'annotations', 'desk-conv-1.pbtxt')), 'annotations must be imported');
+  const importedProj = JSON.parse(fs.readFileSync(path.join(destProjects, 'proj-a.json'), 'utf8'));
+  assert.strictEqual(importedProj.extraNotePath, 'C:\\Users\\home\\notes.md');
   assert.strictEqual(importResult.cli.mergeStats.added, 1);
   assert.strictEqual(importResult.cli.mergeStats.parentsMerged, 1);
   assert.strictEqual(importResult.cli.settingsMerged, true);
@@ -192,6 +209,7 @@ try {
   assert.strictEqual(restoreRes.desktop.summary, true);
   assert.strictEqual(restoreRes.cli.summary, true);
   assert.strictEqual(restoreRes.mcpRestored, true);
+  assert(fs.existsSync(path.join(restoredDest, 'desktop', 'annotations', 'desk-conv-1.pbtxt')), 'annotations must be restored from snapshot');
 
   console.log('All storage.js v2 unit tests passed successfully! 🎉');
 } finally {

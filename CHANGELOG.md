@@ -5,6 +5,11 @@ All notable changes to `antigravity-sync` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (`MAJOR.MINOR.PATCH`).
 
+## [2.1.3] - 2026-11-16
+
+### Fixed
+- **Prevented Desktop `additionalDirs` DB Collision & Hardened Sync**: Stopped copying Desktop-native `.db` files into `~/.gemini/antigravity-cli/conversations/`, hardened WAL read safety, improved Git pull/push resilience (dynamic default branch & unborn `HEAD`), blocked integrated-terminal self-termination, and added strict `--flag=value`/`--target` CLI validation.
+
 ## [2.1.2] - 2026-11-16
 
 ### Fixed

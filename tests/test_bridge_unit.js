@@ -103,8 +103,29 @@ try {
   assert.strictEqual(cliDeskRow.app_data_dir, 'antigravity');
   assert.strictEqual(cliDeskRow.source, '');
   assert.strictEqual(cliSharedRow.app_data_dir, 'antigravity-cli');
-  assert(fs.existsSync(path.join(cliDir, 'conversations', 'desk-1.db')));
+  // Desktop-native .db must NOT be copied into cli/conversations (otherwise Desktop additionalDirs scanner overwrites source=CLI and clears titles)
+  assert(!fs.existsSync(path.join(cliDir, 'conversations', 'desk-1.db')));
   assert(fs.existsSync(path.join(cliDir, 'brain', 'desk-1', 'notes.md')));
+
+  // Verify updating an existing CLI .db when Desktop copy is newer works
+  const oldTime = new Date(Date.now() - 10000);
+  fs.writeFileSync(path.join(cliDir, 'conversations', 'shared-1.db'), 'old-cli-db');
+  fs.utimesSync(path.join(cliDir, 'conversations', 'shared-1.db'), oldTime, oldTime);
+  fs.writeFileSync(path.join(desktopDir, 'conversations', 'shared-1.db'), 'updated-shared-from-desktop');
+  const sharedDeskMod = exportSummaries(path.join(desktopDir, 'conversation_summaries.db'));
+  const sharedDeskItem = sharedDeskMod.conversations.find(c => c.conversation_id === 'shared-1');
+  sharedDeskItem.last_modified_time = '2026-11-13T08:00:00Z';
+  sharedDeskItem.step_count = 25;
+  importAndMergeSummaries(path.join(desktopDir, 'conversation_summaries.db'), sharedDeskMod);
+  const resSharedUpdate = bridgeLocalClients({ desktopDir, cliDir, backupDir }, { direction: 'desktop-to-cli' });
+  assert.strictEqual(resSharedUpdate.desktopToCli.copiedDbCount, 1);
+  assert.strictEqual(fs.readFileSync(path.join(cliDir, 'conversations', 'shared-1.db'), 'utf8'), 'updated-shared-from-desktop');
+
+  // Verify identical desktopDir and cliDir are rejected
+  assert.throws(
+    () => bridgeLocalClients({ desktopDir, cliDir: desktopDir, backupDir }, { direction: 'both' }),
+    /경로가 동일/
+  );
 
   // 3. Re-running bridge should be idempotent (zero diff) and NOT copy unrelated DB/brain files
   fs.writeFileSync(path.join(cliDir, 'conversations', 'unindexed-only.db'), 'unindexed-cli');

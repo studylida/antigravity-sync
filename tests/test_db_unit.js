@@ -144,6 +144,102 @@ try {
   rawDb.close();
   assert(parentTable, 'conversation_parents table must exist in CLI DB');
 
+  // Test read-safe export when -wal sidecar exists & union of row columns on import & null timestamps
+  const walSeedPath = path.join(process.cwd(), 'tests', 'temp_wal_seed.db');
+  for (const ext of ['', '-wal', '-shm']) {
+    if (fs.existsSync(walSeedPath + ext)) fs.unlinkSync(walSeedPath + ext);
+  }
+  try {
+    importAndMergeSummaries(walSeedPath, {
+      version: 2,
+      conversations: [
+        {
+          conversation_id: 'wal-1',
+          title: 'Initial Title',
+          workspace_uris: '[]',
+          last_modified_time: '2026-11-13T01:00:00Z',
+          last_user_input_time: '2026-11-13T01:00:00Z'
+        },
+        {
+          conversation_id: 'empty-ts',
+          title: 'Empty Timestamp Row',
+          workspace_uris: '[]',
+          last_modified_time: '',
+          last_user_input_time: '2026-11-13T01:00:00Z',
+          group_id: 'grp-9'
+        }
+      ]
+    });
+    // Write uncommitted update to WAL while connection remains open during exportSummaries
+    const activeConn = new DatabaseSync(walSeedPath);
+    activeConn.exec("PRAGMA journal_mode = WAL;");
+    activeConn.prepare("UPDATE conversation_summaries SET title = 'WAL Live Title' WHERE conversation_id = 'wal-1'").run();
+    const walExported = exportSummaries(walSeedPath);
+    activeConn.close();
+
+    const walRow = walExported.conversations.find(c => c.conversation_id === 'wal-1');
+    assert.strictEqual(walRow.title, 'WAL Live Title');
+    const emptyRow = walExported.conversations.find(c => c.conversation_id === 'empty-ts');
+    assert.strictEqual(emptyRow.group_id, 'grp-9');
+
+    // Merge empty/invalid timestamp should not overwrite valid timestamp, and valid timestamp should update empty timestamp
+    const emptyTestTarget = path.join(process.cwd(), 'tests', 'temp_null_target.db');
+    if (fs.existsSync(emptyTestTarget)) fs.unlinkSync(emptyTestTarget);
+    try {
+      importAndMergeSummaries(emptyTestTarget, {
+        version: 2,
+        conversations: [
+          {
+            conversation_id: 'c1',
+            title: 'Valid Ts',
+            workspace_uris: '[]',
+            last_modified_time: '2026-11-13T01:00:00Z',
+            last_user_input_time: '2026-11-13T01:00:00Z'
+          },
+          {
+            conversation_id: 'c2',
+            title: 'Empty Ts',
+            workspace_uris: '[]',
+            last_modified_time: '',
+            last_user_input_time: ''
+          }
+        ]
+      });
+      const resNullMerge = importAndMergeSummaries(emptyTestTarget, {
+        version: 2,
+        conversations: [
+          {
+            conversation_id: 'c1',
+            title: 'Should Not Overwrite With Empty',
+            workspace_uris: '[]',
+            last_modified_time: '',
+            last_user_input_time: ''
+          },
+          {
+            conversation_id: 'c2',
+            title: 'Replaced By Valid',
+            workspace_uris: '[]',
+            last_modified_time: '2026-11-13T02:00:00Z',
+            last_user_input_time: '2026-11-13T02:00:00Z'
+          }
+        ]
+      });
+      assert.strictEqual(resNullMerge.updated, 1);
+      assert.strictEqual(resNullMerge.skipped, 1);
+      const afterNullMerge = exportSummaries(emptyTestTarget);
+      assert.strictEqual(afterNullMerge.conversations.find(c => c.conversation_id === 'c1').title, 'Valid Ts');
+      assert.strictEqual(afterNullMerge.conversations.find(c => c.conversation_id === 'c2').title, 'Replaced By Valid');
+    } finally {
+      for (const ext of ['', '-wal', '-shm']) {
+        if (fs.existsSync(emptyTestTarget + ext)) fs.unlinkSync(emptyTestTarget + ext);
+      }
+    }
+  } finally {
+    for (const ext of ['', '-wal', '-shm']) {
+      if (fs.existsSync(walSeedPath + ext)) fs.unlinkSync(walSeedPath + ext);
+    }
+  }
+
   console.log('All db.js unit tests passed successfully! 🎉');
 } finally {
   for (const p of [tempSourceDbPath, tempDbPath, tempCliDbPath]) {

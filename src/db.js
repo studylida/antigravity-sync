@@ -86,6 +86,43 @@ export function ensureSummariesDb(dbPath, options = {}) {
   }
 }
 
+function parseTimestampMs(value) {
+  if (!value) return NaN;
+  return new Date(value).getTime();
+}
+
+function openSummariesDbReadSafe(dbPath) {
+  const hasSidecar = fs.existsSync(`${dbPath}-wal`) || fs.existsSync(`${dbPath}-shm`);
+  if (!hasSidecar) {
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    return {
+      db,
+      cleanup() {
+        db.close();
+      }
+    };
+  }
+
+  // Copy DB + WAL/SHM to a temporary file so live Desktop/CLI readers are never blocked or dirtied
+  const tmpBase = path.join(os.tmpdir(), `agy-sync-ro-${process.pid}-${Date.now()}.db`);
+  fs.copyFileSync(dbPath, tmpBase);
+  for (const ext of ['-wal', '-shm']) {
+    if (fs.existsSync(`${dbPath}${ext}`)) {
+      fs.copyFileSync(`${dbPath}${ext}`, `${tmpBase}${ext}`);
+    }
+  }
+  const db = new DatabaseSync(tmpBase, { readOnly: true });
+  return {
+    db,
+    cleanup() {
+      try { db.close(); } catch {}
+      for (const f of [tmpBase, `${tmpBase}-wal`, `${tmpBase}-shm`]) {
+        try { fs.rmSync(f, { force: true }); } catch {}
+      }
+    }
+  };
+}
+
 /**
  * Exports all conversations (and parent links if present) from conversation_summaries.db.
  */
@@ -100,7 +137,7 @@ export function exportSummaries(dbPath, currentHome = os.homedir()) {
     };
   }
 
-  const db = new DatabaseSync(dbPath);
+  const { db, cleanup } = openSummariesDbReadSafe(dbPath);
   try {
     if (!tableExists(db, 'conversation_summaries')) {
       return {
@@ -142,19 +179,41 @@ export function exportSummaries(dbPath, currentHome = os.homedir()) {
       conversations,
       parents
     };
-  } finally {
-    db.close();
+    } finally {
+    cleanup();
   }
 }
 
-function getColumnValues(row, columns, adaptedWorkspaceUris, adaptedProjectId) {
+function parseDefaultValue(colMeta) {
+  if (!colMeta) return null;
+  const dflt = colMeta.dflt_value;
+  if (dflt !== null && dflt !== undefined) {
+    if (dflt === '""' || dflt === "''") return '';
+    if (dflt === 'false') return 0;
+    if (dflt === 'true') return 1;
+    const num = Number(dflt);
+    if (!Number.isNaN(num) && dflt.trim() !== '') return num;
+    return dflt.replace(/^['"]|['"]$/g, '');
+  }
+  if (colMeta.notnull) {
+    const t = (colMeta.type || '').toLowerCase();
+    if (t.includes('int') || t.includes('num')) return 0;
+    return '';
+  }
+  return null;
+}
+
+function getColumnValues(row, columns, adaptedWorkspaceUris, adaptedProjectId, colMetaMap = null) {
   return columns.map(c => {
     if (c === 'workspace_uris') return adaptedWorkspaceUris;
     if (c === 'project_id') return adaptedProjectId;
     if (c === 'raw_summary' && row[c]) {
       return patchRawSummaryBlob(row[c], { source: row.source, title: row.title });
     }
-    return row[c] ?? null;
+    if (row[c] !== undefined && row[c] !== null) {
+      return row[c];
+    }
+    return parseDefaultValue(colMetaMap?.get(c));
   });
 }
 
@@ -188,14 +247,22 @@ export function importAndMergeSummaries(dbPath, indexData, options = {}) {
     const existingMap = new Map(existingRows.map(r => [r.conversation_id, r]));
 
     const conversations = indexData.conversations || [];
-    const tableColumns = db.prepare('PRAGMA table_info(conversation_summaries)').all().map(col => col.name);
+    const tableInfo = db.prepare('PRAGMA table_info(conversation_summaries)').all();
+    const tableColumns = tableInfo.map(col => col.name);
+    const colMetaMap = new Map(tableInfo.map(col => [col.name, col]));
     const validColSet = new Set(tableColumns);
 
     db.exec('BEGIN TRANSACTION');
 
     if (conversations.length > 0) {
-      const sample = conversations[0];
-      const columns = Object.keys(sample).filter(c => validColSet.has(c));
+      const colSet = new Set();
+      for (const conv of conversations) {
+        if (!conv || typeof conv !== 'object') continue;
+        for (const k of Object.keys(conv)) {
+          if (validColSet.has(k)) colSet.add(k);
+        }
+      }
+      const columns = Array.from(colSet);
       if (!columns.includes('conversation_id')) {
         throw new Error('Invalid conversation index: missing conversation_id column');
       }
@@ -219,18 +286,18 @@ export function importAndMergeSummaries(dbPath, indexData, options = {}) {
         const adaptedProjectId = expandPaths(conv.project_id || '', targetHome, sourceHome, customMappings);
 
         if (!existing) {
-          const values = getColumnValues(conv, columns, adaptedWorkspaceUris, adaptedProjectId);
+          const values = getColumnValues(conv, columns, adaptedWorkspaceUris, adaptedProjectId, colMetaMap);
           insertStmt.run(...values);
           added++;
         } else {
-          const remoteTime = new Date(conv.last_modified_time).getTime();
-          const localTime = new Date(existing.last_modified_time).getTime();
+          const remoteTime = parseTimestampMs(conv.last_modified_time);
+          const localTime = parseTimestampMs(existing.last_modified_time);
           const isNewer =
-            (Number.isFinite(remoteTime) && Number.isFinite(localTime) && remoteTime > localTime) ||
+            (Number.isFinite(remoteTime) && (!Number.isFinite(localTime) || remoteTime > localTime)) ||
             (conv.step_count || 0) > (existing.step_count || 0);
 
           if (isNewer && updateStmt) {
-            const values = getColumnValues(conv, updateCols, adaptedWorkspaceUris, adaptedProjectId);
+            const values = getColumnValues(conv, updateCols, adaptedWorkspaceUris, adaptedProjectId, colMetaMap);
             values.push(conv.conversation_id);
             updateStmt.run(...values);
             updated++;

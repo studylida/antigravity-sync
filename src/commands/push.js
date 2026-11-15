@@ -3,6 +3,8 @@ import { assertAntigravitySafe } from '../process.js';
 import { exportToSyncDir } from '../storage.js';
 import { isGitRepo, gitPull, gitCommitAndPush } from '../git.js';
 
+const VALID_TARGETS = new Set(['all', 'desktop', 'cli', 'config']);
+
 export async function commandPush(options = {}) {
   const cfg = loadConfig();
   if (!cfg.configured) {
@@ -11,6 +13,9 @@ export async function commandPush(options = {}) {
   }
 
   const target = options.target || 'all';
+  if (!VALID_TARGETS.has(target)) {
+    throw new Error(`유효하지 않은 --target 값입니다: "${target}" (사용 가능: all, desktop, cli, config)`);
+  }
   assertAntigravitySafe(options.force, {
     desktop: target === 'all' || target === 'desktop',
     cli: target === 'all' || target === 'cli'
@@ -47,7 +52,7 @@ export async function commandPush(options = {}) {
       if (gitRes.pushed) {
         console.log('   ✅ 원격 저장소 푸시 완료');
       } else {
-        console.log('   ℹ️  원격 저장소가 설정되지 않았거나 로컬 커밋으로 저장되었습니다.');
+        console.log('   ℹ️  원격 저장소가 설정되지 않아 로컬 커밋만 생성되었습니다.');
       }
     } else {
       console.log('   ℹ️  변경된 내용이 없어 커밋을 건너뛰었습니다.');

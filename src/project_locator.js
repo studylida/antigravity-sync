@@ -201,9 +201,19 @@ export async function resolveProjectLocalPath(projectData, projectsDir, options 
   const projectName = projectData.name;
   const resources = projectData.projectResources?.resources || [];
   let expectedRemoteUrl = '';
+  const candidateUris = [];
 
   for (const res of resources) {
     if (res.gitFolder?.remoteUrl) expectedRemoteUrl = res.gitFolder.remoteUrl;
+    if (res.gitFolder?.folderUri) candidateUris.push(res.gitFolder.folderUri);
+    if (res.workspaceUri) candidateUris.push(res.workspaceUri);
+  }
+
+  for (const uri of candidateUris) {
+    const existingPath = fromFileUri(uri);
+    if (existingPath && fs.existsSync(existingPath)) {
+      return existingPath;
+    }
   }
 
   const searchRoots = getCandidateSearchRoots(projectsDir, options.searchRoots || []);

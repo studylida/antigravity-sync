@@ -72,6 +72,12 @@ function backupClientFiles(clientDir, destDir, includeCliExtras = false) {
     f => f.endsWith('.db')
   );
 
+  copyAnnotationsFiles(
+    path.join(clientDir, 'annotations'),
+    path.join(destDir, 'annotations'),
+    false
+  );
+
   if (includeCliExtras) {
     const settingsPath = path.join(clientDir, 'settings.json');
     if (fs.existsSync(settingsPath)) {
@@ -197,6 +203,11 @@ function restoreClientBackup(snapClientDir, targetClientDir, includeCliExtras = 
     path.join(targetClientDir, 'conversations'),
     f => f.endsWith('.db')
   );
+  copyAnnotationsFiles(
+    path.join(snapClientDir, 'annotations'),
+    path.join(targetClientDir, 'annotations'),
+    false
+  );
   const targetConvsDir = path.join(targetClientDir, 'conversations');
   if (fs.existsSync(path.join(snapClientDir, 'conversations'))) {
     for (const file of fs.readdirSync(path.join(snapClientDir, 'conversations'))) {
@@ -259,6 +270,32 @@ export function restoreSnapshot(snapshotPath, cfg) {
 /**
  * Recursively copies a directory with optional text transformation for JSON/JSONL files.
  */
+const isAnnotationFile = (name) => name.endsWith('.pbtxt') || name.endsWith('.pb');
+
+function copyAnnotationsFiles(srcDir, destDir, onlyIfNewer = false) {
+  if (!fs.existsSync(srcDir)) return 0;
+  fs.mkdirSync(destDir, { recursive: true });
+  let count = 0;
+  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !isAnnotationFile(entry.name)) continue;
+    const srcPath = path.join(srcDir, entry.name);
+    const destPath = path.join(destDir, entry.name);
+    if (onlyIfNewer && fs.existsSync(destPath)) {
+      const srcStat = fs.statSync(srcPath);
+      const destStat = fs.statSync(destPath);
+      if (srcStat.size === destStat.size && srcStat.mtimeMs <= destStat.mtimeMs) {
+        continue;
+      }
+      if (srcStat.mtimeMs < destStat.mtimeMs) {
+        continue;
+      }
+    }
+    fs.copyFileSync(srcPath, destPath);
+    count++;
+  }
+  return count;
+}
+
 export function copyDirRecursive(src, dest, transformFn = null) {
   if (!fs.existsSync(src)) return;
   fs.mkdirSync(dest, { recursive: true });
@@ -269,15 +306,30 @@ export function copyDirRecursive(src, dest, transformFn = null) {
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
 
-    if (entry.isDirectory()) {
+    let lstat;
+    try {
+      lstat = fs.lstatSync(srcPath);
+    } catch {
+      continue;
+    }
+
+    // Skip symlinks (especially broken ones) so recursive sync never crashes on dangling links
+    if (lstat.isSymbolicLink()) {
+      continue;
+    }
+
+    if (lstat.isDirectory()) {
       copyDirRecursive(srcPath, destPath, transformFn);
-    } else {
+    } else if (lstat.isFile()) {
       let shouldCopy = true;
       if (fs.existsSync(destPath)) {
-        const srcStat = fs.statSync(srcPath);
-        const destStat = fs.statSync(destPath);
-        if (srcStat.size === destStat.size && srcStat.mtimeMs <= destStat.mtimeMs) {
-          shouldCopy = false;
+        try {
+          const destStat = fs.statSync(destPath);
+          if (lstat.size === destStat.size && lstat.mtimeMs <= destStat.mtimeMs) {
+            shouldCopy = false;
+          }
+        } catch {
+          shouldCopy = true;
         }
       }
       if (shouldCopy) {
@@ -287,10 +339,18 @@ export function copyDirRecursive(src, dest, transformFn = null) {
             const transformed = transformFn(raw);
             fs.writeFileSync(destPath, transformed, 'utf8');
           } catch {
-            fs.copyFileSync(srcPath, destPath);
+            try {
+              fs.copyFileSync(srcPath, destPath);
+            } catch (err) {
+              console.warn(`[Storage] Failed to copy ${srcPath}: ${err.message}`);
+            }
           }
         } else {
-          fs.copyFileSync(srcPath, destPath);
+          try {
+            fs.copyFileSync(srcPath, destPath);
+          } catch (err) {
+            console.warn(`[Storage] Failed to copy ${srcPath}: ${err.message}`);
+          }
         }
       }
     }
@@ -369,6 +429,12 @@ function exportClientStore(clientDir, outDir, homeDir = os.homedir()) {
     f => f.endsWith('.db')
   );
 
+  const annotationsCount = copyAnnotationsFiles(
+    path.join(clientDir, 'annotations'),
+    path.join(outDir, 'annotations'),
+    true
+  );
+
   const transformExport = (content) => templatizePaths(content, homeDir);
   const brainCount = copyBrainDirs(path.join(clientDir, 'brain'), outBrain, transformExport);
 
@@ -376,6 +442,7 @@ function exportClientStore(clientDir, outDir, homeDir = os.homedir()) {
     present: true,
     indexCount: indexData.conversations.length,
     convCount,
+    annotationsCount,
     brainCount
   };
 }
@@ -401,6 +468,12 @@ function importClientStore(inDir, clientDir, options = {}) {
   const copiedDbCount = copyConversationDbs(
     path.join(inDir, 'conversations'),
     path.join(clientDir, 'conversations')
+  );
+
+  copyAnnotationsFiles(
+    path.join(inDir, 'annotations'),
+    path.join(clientDir, 'annotations'),
+    true
   );
 
   const transformImport = (content) => expandPaths(
@@ -556,8 +629,9 @@ async function importConfigStore(inConfigDir, geminiConfigDir, projectsDir, opti
     for (const f of fs.readdirSync(syncProjects)) {
       if (!f.endsWith('.json')) continue;
       const raw = fs.readFileSync(path.join(syncProjects, f), 'utf8');
+      const expandedRaw = expandPaths(raw, targetHome, sourceHome, pathMappings);
       try {
-        const projectObj = JSON.parse(raw);
+        const projectObj = JSON.parse(expandedRaw);
         const resolvedPath = await resolveProjectLocalPath(projectObj, projectsDir, options);
         if (resolvedPath) {
           const newUri = toFileUri(resolvedPath);
@@ -569,10 +643,10 @@ async function importConfigStore(inConfigDir, geminiConfigDir, projectsDir, opti
           }
           fs.writeFileSync(path.join(projectsDir, f), JSON.stringify(projectObj, null, 2), 'utf8');
         } else {
-          fs.writeFileSync(path.join(projectsDir, f), expandPaths(raw, targetHome, sourceHome, pathMappings), 'utf8');
+          fs.writeFileSync(path.join(projectsDir, f), expandedRaw, 'utf8');
         }
       } catch {
-        fs.writeFileSync(path.join(projectsDir, f), expandPaths(raw, targetHome, sourceHome, pathMappings), 'utf8');
+        fs.writeFileSync(path.join(projectsDir, f), expandedRaw, 'utf8');
       }
       copiedProjectCount++;
     }

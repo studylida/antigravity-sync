@@ -5,6 +5,8 @@ import { assertAntigravitySafe } from '../process.js';
 import { createSnapshot, importFromSyncDir } from '../storage.js';
 import { isGitRepo, gitPull } from '../git.js';
 
+const VALID_TARGETS = new Set(['all', 'desktop', 'cli', 'config']);
+
 export async function commandPull(options = {}) {
   const cfg = loadConfig();
   if (!cfg.configured) {
@@ -13,6 +15,9 @@ export async function commandPull(options = {}) {
   }
 
   const target = options.target || 'all';
+  if (!VALID_TARGETS.has(target)) {
+    throw new Error(`유효하지 않은 --target 값입니다: "${target}" (사용 가능: all, desktop, cli, config)`);
+  }
   assertAntigravitySafe(options.force, {
     desktop: target === 'all' || target === 'desktop',
     cli: target === 'all' || target === 'cli'
