@@ -3,6 +3,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 const PROTO_CACHE_FILENAMES = ['agyhub_summaries_proto.pb', 'jetbox_summaries_proto.pb'];
+const CLI_SOURCE_ENUM = 17; // CORTEX_TRAJECTORY_SOURCE_CLI
 
 function readVarint(buf, offset) {
   let val = 0n;
@@ -22,6 +23,7 @@ function parseProtoFields(buf) {
   const fields = [];
   let i = 0;
   while (i < b.length) {
+    const start = i;
     const [tag, ni] = readVarint(b, i);
     i = ni;
     const fn = Number(tag >> 3n);
@@ -29,20 +31,20 @@ function parseProtoFields(buf) {
     if (wt === 0) {
       const [val, vi] = readVarint(b, i);
       i = vi;
-      fields.push({ fn, wt, val });
+      fields.push({ fn, wt, val, raw: b.subarray(start, i) });
     } else if (wt === 2) {
       const [len, li] = readVarint(b, i);
       i = li;
       const n = Number(len);
       const slice = b.subarray(i, i + n);
       i += n;
-      fields.push({ fn, wt, val: slice });
+      fields.push({ fn, wt, val: slice, raw: b.subarray(start, i) });
     } else if (wt === 1) {
       i += 8;
-      fields.push({ fn, wt });
+      fields.push({ fn, wt, raw: b.subarray(start, i) });
     } else if (wt === 5) {
       i += 4;
-      fields.push({ fn, wt });
+      fields.push({ fn, wt, raw: b.subarray(start, i) });
     } else {
       break;
     }
@@ -72,6 +74,63 @@ function encodeVarintField(fn, num) {
 function encodeBytesField(fn, buf) {
   const b = Buffer.from(buf);
   return Buffer.concat([encodeTag(fn, 2), encodeVarint(b.length), b]);
+}
+
+/**
+ * Keeps raw_summary protobuf fields (field 15 title sub-message, field 20 source enum)
+ * aligned with SQLite row metadata while preserving all unknown fields verbatim.
+ */
+export function patchRawSummaryBlob(rawSummary, { source, title } = {}) {
+  if (!rawSummary) return rawSummary;
+  const buf = typeof rawSummary === 'string'
+    ? Buffer.from(rawSummary, 'base64')
+    : Buffer.from(rawSummary);
+  if (buf.length === 0) return buf;
+
+  const fields = parseProtoFields(buf);
+  if (fields.length === 0) return buf;
+
+  const out = [];
+  let wroteTitle = false;
+  let wroteSource = false;
+
+  for (const field of fields) {
+    if (field.fn === 15 && title !== undefined) {
+      if (title) {
+        const subFields = field.wt === 2 ? parseProtoFields(field.val) : [];
+        const inner = [encodeBytesField(1, Buffer.from(title, 'utf8'))];
+        for (const sf of subFields) {
+          if (sf.fn !== 1) inner.push(sf.raw);
+        }
+        out.push(encodeBytesField(15, Buffer.concat(inner)));
+      }
+      wroteTitle = true;
+      continue;
+    }
+
+    if (field.fn === 20 && source !== undefined) {
+      if (source === 'CORTEX_TRAJECTORY_SOURCE_CLI') {
+        out.push(encodeVarintField(20, CLI_SOURCE_ENUM));
+      } else if (source === '') {
+        // Desktop / default source omits field 20
+      } else {
+        out.push(field.raw);
+      }
+      wroteSource = true;
+      continue;
+    }
+
+    out.push(field.raw);
+  }
+
+  if (!wroteTitle && title) {
+    out.push(encodeBytesField(15, encodeBytesField(1, Buffer.from(title, 'utf8'))));
+  }
+  if (!wroteSource && source === 'CORTEX_TRAJECTORY_SOURCE_CLI') {
+    out.push(encodeVarintField(20, CLI_SOURCE_ENUM));
+  }
+
+  return Buffer.concat(out);
 }
 
 /**
@@ -153,7 +212,7 @@ export function syncClientProtoSummaries(clientDir, summaryDbPath) {
   try {
     const hasTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = 'conversation_summaries'").get();
     if (!hasTable) return 0;
-    rows = db.prepare('SELECT conversation_id, raw_summary, last_modified_time FROM conversation_summaries').all();
+    rows = db.prepare('SELECT conversation_id, title, source, raw_summary FROM conversation_summaries').all();
   } finally {
     db.close();
   }
@@ -169,7 +228,7 @@ export function syncClientProtoSummaries(clientDir, summaryDbPath) {
       if (row.raw_summary instanceof Uint8Array || Buffer.isBuffer(row.raw_summary)) {
         const buf = Buffer.from(row.raw_summary);
         if (buf.length > 0) {
-          summaries.set(id, buf);
+          summaries.set(id, patchRawSummaryBlob(buf, { source: row.source, title: row.title }));
           timestamps.set(id, nowSec);
         }
       }

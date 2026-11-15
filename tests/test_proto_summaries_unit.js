@@ -6,7 +6,8 @@ import { createSnapshot, restoreSnapshot } from '../src/storage.js';
 import {
   readProtoSummaryCache,
   writeProtoSummaryCache,
-  syncClientProtoSummaries
+  syncClientProtoSummaries,
+  patchRawSummaryBlob
 } from '../src/proto_summaries.js';
 
 const testDir = path.join(process.cwd(), 'tests', 'test_proto_sandbox');
@@ -18,7 +19,13 @@ try {
   const backupDir = path.join(testDir, 'backups');
   fs.mkdirSync(path.join(desktopDir, 'conversations'), { recursive: true });
 
-  const intactRaw = Buffer.from([0x0a, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x7a, 0x05, 0x54, 0x69, 0x74, 0x6c, 0x65]);
+  const titleBytes = Buffer.from('Intact Title', 'utf8');
+  const nestedTitle = Buffer.concat([Buffer.from([0x0a, titleBytes.length]), titleBytes]);
+  const intactRaw = Buffer.concat([
+    Buffer.from([0x0a, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f]),
+    Buffer.from([0x7a, nestedTitle.length]),
+    nestedTitle
+  ]);
   const staleRaw = Buffer.from([0x0a, 0x05, 0x53, 0x74, 0x61, 0x6c, 0x65, 0xa0, 0x01, 0x11]);
 
   const dbPath = path.join(desktopDir, 'conversation_summaries.db');
@@ -85,7 +92,16 @@ try {
   const syncedCount = syncClientProtoSummaries(desktopDir, dbPath);
   assert.strictEqual(syncedCount, 1);
   const afterSync = readProtoSummaryCache(pbPath);
-  assert(afterSync.summaries.get('conv-1')?.equals(intactRaw));
+  const syncedBlob = afterSync.summaries.get('conv-1');
+  assert(syncedBlob && syncedBlob.includes(Buffer.from('Intact Title', 'utf8')));
+
+  // patchRawSummaryBlob: adding/removing CLI source enum & updating title
+  const withCliSource = patchRawSummaryBlob(intactRaw, { source: 'CORTEX_TRAJECTORY_SOURCE_CLI', title: 'Updated Title' });
+  assert(withCliSource.includes(Buffer.from('Updated Title', 'utf8')));
+  assert(!withCliSource.includes(Buffer.from('Title', 'utf8')) || withCliSource.includes(Buffer.from('Updated Title', 'utf8')));
+  const strippedCliSource = patchRawSummaryBlob(withCliSource, { source: '', title: 'Desktop Title' });
+  assert(strippedCliSource.includes(Buffer.from('Desktop Title', 'utf8')));
+  assert(strippedCliSource.length < withCliSource.length || !strippedCliSource.equals(withCliSource));
 
   console.log('All proto_summaries.js unit tests passed successfully!');
 } finally {

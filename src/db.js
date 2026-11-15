@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { templatizePaths, expandPaths } from './path_utils.js';
+import { patchRawSummaryBlob } from './proto_summaries.js';
 
 export const CONVERSATION_SUMMARIES_SCHEMA = `
 CREATE TABLE IF NOT EXISTS \`conversation_summaries\` (
@@ -150,8 +151,8 @@ function getColumnValues(row, columns, adaptedWorkspaceUris, adaptedProjectId) {
   return columns.map(c => {
     if (c === 'workspace_uris') return adaptedWorkspaceUris;
     if (c === 'project_id') return adaptedProjectId;
-    if (c === 'raw_summary' && typeof row[c] === 'string') {
-      return Buffer.from(row[c], 'base64');
+    if (c === 'raw_summary' && row[c]) {
+      return patchRawSummaryBlob(row[c], { source: row.source, title: row.title });
     }
     return row[c] ?? null;
   });

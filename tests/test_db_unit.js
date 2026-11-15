@@ -4,15 +4,68 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert';
 
+const tempSourceDbPath = path.join(process.cwd(), 'tests', 'temp_source_summaries.db');
 const tempDbPath = path.join(process.cwd(), 'tests', 'temp_test_summaries.db');
 const tempCliDbPath = path.join(process.cwd(), 'tests', 'temp_test_cli_summaries.db');
-for (const p of [tempDbPath, tempCliDbPath]) {
+for (const p of [tempSourceDbPath, tempDbPath, tempCliDbPath]) {
   if (fs.existsSync(p)) fs.unlinkSync(p);
 }
 
 try {
-  const sourceDbPath = 'C:/Users/dam/.gemini/antigravity/conversation_summaries.db';
-  const exported = exportSummaries(sourceDbPath);
+  importAndMergeSummaries(tempSourceDbPath, {
+    version: 2,
+    sourceHomeDir: 'C:/Users/dam',
+    conversations: [
+      {
+        conversation_id: 'desk-seed-1',
+        title: 'Seed Conv 1',
+        preview: 'preview 1',
+        step_count: 10,
+        last_modified_time: '2026-11-13T05:00:00Z',
+        workspace_uris: '["file:///C:/Users/dam/repo"]',
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        source: '',
+        project_id: 'proj-1',
+        agent_name: '',
+        parent_conversation_id: '',
+        nesting_depth: 0,
+        battle_id: '',
+        winning_conversation_id: '',
+        not_fully_idle: 0,
+        killed: 0,
+        last_user_input_time: '2026-11-13T05:00:00Z',
+        last_user_input_step_index: 9,
+        app_data_dir: 'antigravity',
+        raw_summary: null,
+        group_id: ''
+      },
+      {
+        conversation_id: 'desk-seed-2',
+        title: 'Seed Conv 2',
+        preview: 'preview 2',
+        step_count: 6,
+        last_modified_time: '2026-11-13T04:00:00Z',
+        workspace_uris: '["file:///C:/Users/dam/repo2"]',
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        source: '',
+        project_id: 'proj-2',
+        agent_name: '',
+        parent_conversation_id: '',
+        nesting_depth: 0,
+        battle_id: '',
+        winning_conversation_id: '',
+        not_fully_idle: 0,
+        killed: 0,
+        last_user_input_time: '2026-11-13T04:00:00Z',
+        last_user_input_step_index: 5,
+        app_data_dir: 'antigravity',
+        raw_summary: null,
+        group_id: ''
+      }
+    ]
+  }, { targetHome: 'C:/Users/dam' });
+
+  const exported = exportSummaries(tempSourceDbPath, 'C:/Users/dam');
   console.log('Exported conversations count:', exported.conversations.length);
   assert(exported.conversations.length >= 2);
   assert.strictEqual(exported.version, 2);
@@ -93,7 +146,7 @@ try {
 
   console.log('All db.js unit tests passed successfully! 🎉');
 } finally {
-  for (const p of [tempDbPath, tempCliDbPath]) {
+  for (const p of [tempSourceDbPath, tempDbPath, tempCliDbPath]) {
     if (fs.existsSync(p)) fs.unlinkSync(p);
   }
 }

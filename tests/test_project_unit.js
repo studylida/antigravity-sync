@@ -1,4 +1,6 @@
+import os from 'node:os';
 import { createSnapshot, exportToSyncDir, importFromSyncDir } from '../src/storage.js';
+import { importAndMergeSummaries } from '../src/db.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert';
@@ -7,7 +9,13 @@ const testDir = path.join(process.cwd(), 'tests', 'test_project_sandbox');
 if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true, force: true });
 fs.mkdirSync(testDir, { recursive: true });
 
-const mockAgy = 'C:/Users/dam/.gemini/antigravity';
+const mockAgy = path.join(testDir, 'mock-antigravity');
+fs.mkdirSync(mockAgy, { recursive: true });
+importAndMergeSummaries(path.join(mockAgy, 'conversation_summaries.db'), {
+  version: 2,
+  sourceHomeDir: 'C:/Users/dam',
+  conversations: []
+}, { targetHome: 'C:/Users/dam' });
 const mockProjectsDir = path.join(testDir, 'local-projects');
 const mockSyncDir = path.join(testDir, 'sync-repo');
 const mockBackupDir = path.join(testDir, 'backups');
@@ -16,6 +24,7 @@ const mockDestAgy = path.join(testDir, 'dest-antigravity');
 
 fs.mkdirSync(mockProjectsDir, { recursive: true });
 
+const testHomeUri = os.homedir().replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, d) => `${d.toLowerCase()}%3A`);
 const sampleProject = {
   id: 'test-project-123',
   name: 'mock-unique-sample-proj',
@@ -23,7 +32,7 @@ const sampleProject = {
     resources: [
       {
         gitFolder: {
-          folderUri: 'file:///c%3A/Users/dam/mock-unique-sample-proj',
+          folderUri: `file:///${testHomeUri}/mock-unique-sample-proj`,
           defaultBranch: 'main'
         }
       }

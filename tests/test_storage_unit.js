@@ -8,7 +8,7 @@ const testDir = path.join(process.cwd(), 'tests', 'test_sandbox');
 if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true, force: true });
 fs.mkdirSync(testDir, { recursive: true });
 
-const mockDesktop = 'C:/Users/dam/.gemini/antigravity';
+const mockDesktop = path.join(testDir, 'src-desktop');
 const mockCli = path.join(testDir, 'src-cli');
 const mockConfig = path.join(testDir, 'src-config');
 const mockProjects = path.join(mockConfig, 'projects');
@@ -19,6 +19,37 @@ const destDesktop = path.join(testDir, 'dest-desktop');
 const destCli = path.join(testDir, 'dest-cli');
 const destConfig = path.join(testDir, 'dest-config');
 const destProjects = path.join(destConfig, 'projects');
+
+fs.mkdirSync(path.join(mockDesktop, 'conversations'), { recursive: true });
+importAndMergeSummaries(path.join(mockDesktop, 'conversation_summaries.db'), {
+  version: 2,
+  sourceHomeDir: 'C:/Users/work',
+  conversations: [
+    {
+      conversation_id: 'desk-conv-1',
+      title: 'Desktop Work Session',
+      preview: 'hello desktop',
+      step_count: 12,
+      last_modified_time: '2026-11-13T05:00:00Z',
+      workspace_uris: '["file:///C:/Users/work/repo-a"]',
+      status: 'CASCADE_RUN_STATUS_IDLE',
+      source: '',
+      project_id: 'proj-a',
+      agent_name: '',
+      parent_conversation_id: '',
+      nesting_depth: 0,
+      battle_id: '',
+      winning_conversation_id: '',
+      not_fully_idle: 0,
+      killed: 0,
+      last_user_input_time: '2026-11-13T05:00:00Z',
+      last_user_input_step_index: 10,
+      app_data_dir: 'antigravity',
+      raw_summary: null,
+      group_id: ''
+    }
+  ]
+}, { targetHome: 'C:/Users/work' });
 
 // Setup mock CLI & Config
 fs.mkdirSync(path.join(mockCli, 'conversations'), { recursive: true });
