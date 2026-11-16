@@ -113,14 +113,15 @@ function cleanupPoisonedCliConversationDbs(desktopDir, cliDir, desktopIndex, cli
 }
 
 function transformDesktopRowForCli(conv, existing) {
+  const isCliProject = (existing?.project_id || conv.project_id) === 'default-cli-project';
   if (existing) {
     return {
       ...conv,
-      app_data_dir: existing.app_data_dir || 'antigravity',
+      app_data_dir: isCliProject ? (existing.app_data_dir || 'antigravity-cli') : 'antigravity',
       source: existing.source ?? ''
     };
   }
-  if (conv.source === 'CORTEX_TRAJECTORY_SOURCE_CLI') {
+  if (conv.source === 'CORTEX_TRAJECTORY_SOURCE_CLI' && isCliProject) {
     return {
       ...conv,
       app_data_dir: 'antigravity-cli',
@@ -129,9 +130,67 @@ function transformDesktopRowForCli(conv, existing) {
   }
   return {
     ...conv,
-    app_data_dir: 'antigravity',
+    app_data_dir: isCliProject ? 'antigravity-cli' : 'antigravity',
     source: ''
   };
+}
+
+function collectCliArtifactIdsForDesktop(cliDir, desktopDir, cliIndex, diffTargetIds) {
+  const result = new Set(diffTargetIds);
+  const cliConvDir = path.join(cliDir, 'conversations');
+  const deskConvDir = path.join(desktopDir, 'conversations');
+  const cliBrainDir = path.join(cliDir, 'brain');
+  const deskBrainDir = path.join(desktopDir, 'brain');
+
+  for (const conv of cliIndex.conversations || []) {
+    const id = conv?.conversation_id;
+    if (!id) continue;
+    const hasCliDb = fs.existsSync(path.join(cliConvDir, `${id}.db`));
+    const missingDeskDb = hasCliDb && !fs.existsSync(path.join(deskConvDir, `${id}.db`));
+    const hasCliBrain = fs.existsSync(path.join(cliBrainDir, id));
+    const missingDeskBrain = hasCliBrain && !fs.existsSync(path.join(deskBrainDir, id));
+    if (missingDeskDb || missingDeskBrain) {
+      result.add(id);
+    }
+  }
+  return result;
+}
+
+function syncCliMetadataCache(cliDir, cliDbPath) {
+  const cachePath = path.join(cliDir, 'cache', 'conversation_metadata.json');
+  if (!fs.existsSync(cachePath) || !fs.existsSync(cliDbPath)) return;
+  try {
+    const raw = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+    if (!raw || typeof raw !== 'object' || !raw.conversations) return;
+    const cliIndex = exportSummaries(cliDbPath);
+    let dirty = false;
+    for (const c of cliIndex.conversations || []) {
+      const id = c.conversation_id;
+      const entry = raw.conversations[id];
+      if (!entry?.summary) continue;
+      if (c.title && entry.summary.Title !== c.title) {
+        entry.summary.Title = c.title;
+        dirty = true;
+      }
+      if (c.app_data_dir && entry.summary.AppDataDir !== c.app_data_dir) {
+        entry.summary.AppDataDir = c.app_data_dir;
+        dirty = true;
+      }
+      if (c.project_id && entry.summary.ProjectID !== c.project_id) {
+        entry.summary.ProjectID = c.project_id;
+        dirty = true;
+      }
+      if (Number.isFinite(c.step_count) && entry.summary.NumSteps !== c.step_count) {
+        entry.summary.NumSteps = c.step_count;
+        dirty = true;
+      }
+    }
+    if (dirty) {
+      fs.writeFileSync(cachePath, JSON.stringify(raw, null, 2), 'utf8');
+    }
+  } catch {
+    // Non-fatal cache sync
+  }
 }
 
 /**
@@ -189,10 +248,11 @@ export function bridgeLocalClients(cfg, options = {}) {
     if (mergeStats.added > 0 || mergeStats.updated > 0) {
       syncClientProtoSummaries(desktopDir, desktopDbPath);
     }
-    const targetIds = new Set([
+    const diffTargetIds = new Set([
       ...diff.cliOnly.map(c => c.conversation_id),
       ...diff.newerInCli.map(c => c.conversation_id)
     ]);
+    const targetIds = collectCliArtifactIdsForDesktop(cliDir, desktopDir, initialCliIndex, diffTargetIds);
     const copiedDbCount = targetIds.size > 0
       ? copyConversationDbs(path.join(cliDir, 'conversations'), path.join(desktopDir, 'conversations'), targetIds)
       : 0;
@@ -214,6 +274,7 @@ export function bridgeLocalClients(cfg, options = {}) {
     });
     if (mergeStats.added > 0 || mergeStats.updated > 0) {
       syncClientProtoSummaries(cliDir, cliDbPath);
+      syncCliMetadataCache(cliDir, cliDbPath);
     }
     const targetIds = new Set([
       ...diff.desktopOnly.map(c => c.conversation_id),

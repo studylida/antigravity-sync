@@ -142,6 +142,12 @@ try {
   const deskHealed = exportSummaries(path.join(desktopDir, 'conversation_summaries.db'));
   assert.strictEqual(deskHealed.conversations.find(c => c.conversation_id === 'desk-1').title, 'Protected CLI Title');
 
+  // Verify missing Desktop .db for an indexed CLI conversation is repaired even when diff has 0 summary changes
+  fs.rmSync(path.join(desktopDir, 'conversations', 'cli-1.db'), { force: true });
+  const healMissingDbRes = bridgeLocalClients({ desktopDir, cliDir, backupDir }, { direction: 'cli-to-desktop' });
+  assert.strictEqual(healMissingDbRes.cliToDesktop.copiedDbCount, 1);
+  assert(fs.existsSync(path.join(desktopDir, 'conversations', 'cli-1.db')));
+
   // Verify identical desktopDir and cliDir are rejected
   assert.throws(
     () => bridgeLocalClients({ desktopDir, cliDir: desktopDir, backupDir }, { direction: 'both' }),
