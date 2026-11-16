@@ -8,7 +8,7 @@ import { syncClientProtoSummaries } from './proto_summaries.js';
 import { fromFileUri } from './project_locator.js';
 import { expandPaths } from './path_utils.js';
 import { getDefaultProjectsDir } from './config.js';
-import { getDefaultGuardPath, healClientDbsFromGuard, recordMetadataGuard } from './metadata_guard.js';
+import { getDefaultGuardPath, healClientDbsFromGuard, recordMetadataGuard, syncCliMetadataCache } from './metadata_guard.js';
 
 function parseTimestampMs(value) {
   if (!value) return NaN;
@@ -247,43 +247,6 @@ function collectCliArtifactIdsForDesktop(cliDir, desktopDir, cliIndex, diffTarge
     }
   }
   return result;
-}
-
-function syncCliMetadataCache(cliDir, cliDbPath) {
-  const cachePath = path.join(cliDir, 'cache', 'conversation_metadata.json');
-  if (!fs.existsSync(cachePath) || !fs.existsSync(cliDbPath)) return;
-  try {
-    const raw = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
-    if (!raw || typeof raw !== 'object' || !raw.conversations) return;
-    const cliIndex = exportSummaries(cliDbPath);
-    let dirty = false;
-    for (const c of cliIndex.conversations || []) {
-      const id = c.conversation_id;
-      const entry = raw.conversations[id];
-      if (!entry?.summary) continue;
-      if (c.title && entry.summary.Title !== c.title) {
-        entry.summary.Title = c.title;
-        dirty = true;
-      }
-      if (c.app_data_dir && entry.summary.AppDataDir !== c.app_data_dir) {
-        entry.summary.AppDataDir = c.app_data_dir;
-        dirty = true;
-      }
-      if (c.project_id && entry.summary.ProjectID !== c.project_id) {
-        entry.summary.ProjectID = c.project_id;
-        dirty = true;
-      }
-      if (Number.isFinite(c.step_count) && entry.summary.NumSteps !== c.step_count) {
-        entry.summary.NumSteps = c.step_count;
-        dirty = true;
-      }
-    }
-    if (dirty) {
-      fs.writeFileSync(cachePath, JSON.stringify(raw, null, 2), 'utf8');
-    }
-  } catch {
-    // Non-fatal cache sync
-  }
 }
 
 /**

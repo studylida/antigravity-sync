@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig } from '../config.js';
 import { getRunningProcesses } from '../process.js';
-import { exportSummaries } from '../db.js';
+import { exportSummaries, compareConversationFreshness } from '../db.js';
 import { getBridgeDiff } from '../bridge.js';
 import { isGitRepo, getGitStatus } from '../git.js';
 import { listSnapshots } from '../storage.js';
@@ -19,16 +19,36 @@ function readIndexConversations(indexPath) {
 }
 
 function printDiffSection(label, localConvs, remoteConvs) {
-  const localIds = new Set(localConvs.map(c => c.conversation_id));
-  const remoteIds = new Set(remoteConvs.map(c => c.conversation_id));
-  const localOnly = localConvs.filter(c => !remoteIds.has(c.conversation_id));
-  const remoteOnly = remoteConvs.filter(c => !localIds.has(c.conversation_id));
+  const localMap = new Map(localConvs.map(c => [c.conversation_id, c]));
+  const remoteMap = new Map(remoteConvs.map(c => [c.conversation_id, c]));
+  const pushNew = [];
+  const pushUpdated = [];
+  const pullNew = [];
+  const pullUpdated = [];
 
-  console.log(`   [${label}] Push 대기(로컬만): ${localOnly.length}개 | Pull 대기(원격만): ${remoteOnly.length}개`);
-  for (const c of localOnly.slice(0, 3)) {
+  for (const [id, c] of localMap) {
+    const r = remoteMap.get(id);
+    if (!r) {
+      pushNew.push(c);
+    } else if (compareConversationFreshness(c, r) > 0) {
+      pushUpdated.push(c);
+    }
+  }
+
+  for (const [id, c] of remoteMap) {
+    const l = localMap.get(id);
+    if (!l) {
+      pullNew.push(c);
+    } else if (compareConversationFreshness(c, l) > 0) {
+      pullUpdated.push(c);
+    }
+  }
+
+  console.log(`   [${label}] Push 대기: 신규 ${pushNew.length} / 갱신 ${pushUpdated.length} | Pull 대기: 신규 ${pullNew.length} / 갱신 ${pullUpdated.length}`);
+  for (const c of [...pushNew, ...pushUpdated].slice(0, 3)) {
     console.log(`     📤 [${c.last_modified_time?.substring(0, 10) || 'N/A'}] ${c.title || '(제목 없음)'} (${c.conversation_id.substring(0, 8)}...)`);
   }
-  for (const c of remoteOnly.slice(0, 3)) {
+  for (const c of [...pullNew, ...pullUpdated].slice(0, 3)) {
     console.log(`     📥 [${c.last_modified_time?.substring(0, 10) || 'N/A'}] ${c.title || '(제목 없음)'} (${c.conversation_id.substring(0, 8)}...)`);
   }
 }

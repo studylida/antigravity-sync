@@ -1,6 +1,7 @@
 import { loadConfig } from '../config.js';
 import { assertAntigravitySafe } from '../process.js';
 import { exportToSyncDir } from '../storage.js';
+import { getDefaultGuardPath } from '../metadata_guard.js';
 import { isGitRepo, gitPull, gitCommitAndPush } from '../git.js';
 
 const VALID_TARGETS = new Set(['all', 'desktop', 'cli', 'config']);
@@ -26,14 +27,18 @@ export async function commandPush(options = {}) {
   if (isGitRepo(cfg.syncDir)) {
     try {
       console.log('📥 원격 저장소 최신 상태 확인 중 (Git Pull)...');
-      gitPull(cfg.syncDir);
+      const pullRes = gitPull(cfg.syncDir, { recoverConflictByReset: true });
+      if (pullRes.conflictRecovered) {
+        console.log('   ℹ️  원격/로컬 커밋 충돌을 원격 기준으로 정리하고 로컬 데이터와 재병합합니다.');
+      }
     } catch (err) {
       console.warn(`[Git Pull] 경고: ${err.message}`);
     }
   }
 
+  const guardPath = cfg.guardPath || getDefaultGuardPath();
   console.log(`📦 저장소로 내보내는 중 -> ${cfg.syncDir}`);
-  const result = exportToSyncDir(cfg, { target });
+  const result = exportToSyncDir(cfg, { target, guardPath });
 
   if (result.desktop.present) {
     console.log(`   [Desktop] 인덱스: ${result.desktop.indexCount}개 | DB: ${result.desktop.convCount}개 | 브레인: ${result.desktop.brainCount}개`);
@@ -46,14 +51,18 @@ export async function commandPush(options = {}) {
   if (isGitRepo(cfg.syncDir)) {
     const commitMsg = options.message || `Sync antigravity v2 (${target}) [${new Date().toISOString().replace('T', ' ').substring(0, 19)}]`;
     console.log(`🚀 Git 커밋 및 푸시 진행 중 ("${commitMsg}")...`);
-    const gitRes = gitCommitAndPush(cfg.syncDir, commitMsg);
+    const gitRes = gitCommitAndPush(cfg.syncDir, commitMsg, {
+      onPushConflict: () => exportToSyncDir(cfg, { target, guardPath })
+    });
     if (gitRes.committed) {
       console.log('   ✅ Git 커밋 완료');
       if (gitRes.pushed) {
-        console.log('   ✅ 원격 저장소 푸시 완료');
+        console.log(gitRes.retried ? '   ✅ 원격 변경 재병합 후 푸시 완료' : '   ✅ 원격 저장소 푸시 완료');
       } else {
         console.log('   ℹ️  원격 저장소가 설정되지 않아 로컬 커밋만 생성되었습니다.');
       }
+    } else if (gitRes.pushed) {
+      console.log('   ✅ 미푸시 로컬 커밋 원격 푸시 완료');
     } else {
       console.log('   ℹ️  변경된 내용이 없어 커밋을 건너뛰었습니다.');
     }

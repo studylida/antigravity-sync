@@ -1,11 +1,42 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { exportSummaries, importAndMergeSummaries, checkpointSqliteDb } from './db.js';
+import { createHash } from 'node:crypto';
+import { exportSummaries, importAndMergeSummaries, checkpointSqliteDb, mergeConversationIndexes } from './db.js';
 import { expandPaths, expandPathString, templatizePaths } from './path_utils.js';
-import { resolveProjectLocalPath, toFileUri } from './project_locator.js';
+import { resolveProjectLocalPath, toFileUri, fromFileUri } from './project_locator.js';
 import { PROTO_CACHE_FILENAMES, syncClientProtoSummaries } from './proto_summaries.js';
+import { healClientDbsFromGuard, recordMetadataGuard, syncCliMetadataCache, syncMetadataGuardFile } from './metadata_guard.js';
 import { TOOL_VERSION, SYNC_SCHEMA_VERSION } from './version.js';
+
+function fileSha256(filePath) {
+  const hash = createHash('sha256');
+  hash.update(fs.readFileSync(filePath));
+  return hash.digest('hex');
+}
+
+function filesHaveSameContent(aPath, bPath) {
+  try {
+    const statA = fs.statSync(aPath);
+    const statB = fs.statSync(bPath);
+    if (statA.size !== statB.size) return false;
+    return fileSha256(aPath) === fileSha256(bPath);
+  } catch {
+    return false;
+  }
+}
+
+function writeTextIfChanged(filePath, content) {
+  if (fs.existsSync(filePath)) {
+    try {
+      if (fs.readFileSync(filePath, 'utf8') === content) return false;
+    } catch {
+      // Fall through and overwrite
+    }
+  }
+  fs.writeFileSync(filePath, content, 'utf8');
+  return true;
+}
 
 function copyMatchingFiles(srcDir, destDir, predicate) {
   if (!srcDir || !fs.existsSync(srcDir)) return 0;
@@ -272,15 +303,18 @@ export function restoreSnapshot(snapshotPath, cfg) {
  */
 const isAnnotationFile = (name) => name.endsWith('.pbtxt') || name.endsWith('.pb');
 
-export function copyAnnotationsFiles(srcDir, destDir, onlyIfNewer = false, onlyIds = null) {
+export function copyAnnotationsFiles(srcDir, destDir, onlyIfNewer = false, onlyIds = null, options = {}) {
   if (!fs.existsSync(srcDir)) return 0;
   if (onlyIds && onlyIds.size === 0) return 0;
   fs.mkdirSync(destDir, { recursive: true });
+  const forceIds = options.forceIds instanceof Set ? options.forceIds : null;
+  const skipIds = options.skipIds instanceof Set ? options.skipIds : null;
   let count = 0;
   for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
     if (!entry.isFile() || !isAnnotationFile(entry.name)) continue;
     const convId = entry.name.replace(/\.(pbtxt|pb)$/, '');
     if (onlyIds && !onlyIds.has(convId)) continue;
+    if (skipIds && skipIds.has(convId)) continue;
     const srcPath = path.join(srcDir, entry.name);
     const destPath = path.join(destDir, entry.name);
     if (fs.existsSync(destPath)) {
@@ -293,7 +327,9 @@ export function copyAnnotationsFiles(srcDir, destDir, onlyIfNewer = false, onlyI
           // Ignore read errors and fall back to stat checks
         }
       }
-      if (onlyIfNewer) {
+      if (forceIds && forceIds.has(convId)) {
+        if (filesHaveSameContent(srcPath, destPath)) continue;
+      } else if (onlyIfNewer) {
         const srcStat = fs.statSync(srcPath);
         const destStat = fs.statSync(destPath);
         if (srcStat.size === destStat.size && srcStat.mtimeMs <= destStat.mtimeMs) {
@@ -310,10 +346,12 @@ export function copyAnnotationsFiles(srcDir, destDir, onlyIfNewer = false, onlyI
   return count;
 }
 
-export function copyDirRecursive(src, dest, transformFn = null) {
-  if (!fs.existsSync(src)) return;
+export function copyDirRecursive(src, dest, transformFn = null, options = {}) {
+  if (!fs.existsSync(src)) return 0;
   fs.mkdirSync(dest, { recursive: true });
   const entries = fs.readdirSync(src, { withFileTypes: true });
+  const forceOverwrite = Boolean(options.forceOverwrite);
+  let written = 0;
 
   for (const entry of entries) {
     if (entry.name === '.git') continue;
@@ -333,60 +371,92 @@ export function copyDirRecursive(src, dest, transformFn = null) {
     }
 
     if (lstat.isDirectory()) {
-      copyDirRecursive(srcPath, destPath, transformFn);
+      written += copyDirRecursive(srcPath, destPath, transformFn, options);
     } else if (lstat.isFile()) {
+      const isTextTransformed = Boolean(transformFn && (entry.name.endsWith('.jsonl') || entry.name.endsWith('.json')));
+      if (isTextTransformed) {
+        try {
+          const raw = fs.readFileSync(srcPath, 'utf8');
+          const transformed = transformFn(raw);
+          if (fs.existsSync(destPath)) {
+            if (!forceOverwrite) {
+              const destStat = fs.statSync(destPath);
+              if (lstat.size === destStat.size && lstat.mtimeMs <= destStat.mtimeMs) {
+                continue;
+              }
+            }
+            if (fs.readFileSync(destPath, 'utf8') === transformed) {
+              continue;
+            }
+          }
+          fs.writeFileSync(destPath, transformed, 'utf8');
+          written++;
+          continue;
+        } catch {
+          // Fall back to binary copy below
+        }
+      }
+
       let shouldCopy = true;
       if (fs.existsSync(destPath)) {
-        try {
-          const destStat = fs.statSync(destPath);
-          if (lstat.size === destStat.size && lstat.mtimeMs <= destStat.mtimeMs) {
-            shouldCopy = false;
+        if (forceOverwrite) {
+          shouldCopy = !filesHaveSameContent(srcPath, destPath);
+        } else {
+          try {
+            const destStat = fs.statSync(destPath);
+            if (filesHaveSameContent(srcPath, destPath) || (lstat.size === destStat.size && lstat.mtimeMs <= destStat.mtimeMs)) {
+              shouldCopy = false;
+            }
+          } catch {
+            shouldCopy = true;
           }
-        } catch {
-          shouldCopy = true;
         }
       }
       if (shouldCopy) {
-        if (transformFn && (entry.name.endsWith('.jsonl') || entry.name.endsWith('.json'))) {
-          try {
-            const raw = fs.readFileSync(srcPath, 'utf8');
-            const transformed = transformFn(raw);
-            fs.writeFileSync(destPath, transformed, 'utf8');
-          } catch {
-            try {
-              fs.copyFileSync(srcPath, destPath);
-            } catch (err) {
-              console.warn(`[Storage] Failed to copy ${srcPath}: ${err.message}`);
-            }
-          }
-        } else {
-          try {
-            fs.copyFileSync(srcPath, destPath);
-          } catch (err) {
-            console.warn(`[Storage] Failed to copy ${srcPath}: ${err.message}`);
-          }
+        try {
+          fs.copyFileSync(srcPath, destPath);
+          written++;
+        } catch (err) {
+          console.warn(`[Storage] Failed to copy ${srcPath}: ${err.message}`);
         }
       }
     }
   }
+  return written;
 }
 
 /**
- * Copies conversation .db files from srcConvDir to destConvDir if missing or newer.
+ * Copies conversation .db files from srcConvDir to destConvDir if missing, newer in index, or newer on disk.
  */
-export function copyConversationDbs(srcConvDir, destConvDir, onlyIds = null) {
-  if (!fs.existsSync(srcConvDir)) return 0;
+export function copyConversationDbs(srcConvDir, destConvDir, onlyIds = null, options = {}) {
+  if (!srcConvDir || !fs.existsSync(srcConvDir)) return 0;
   if (onlyIds && onlyIds.size === 0) return 0;
   fs.mkdirSync(destConvDir, { recursive: true });
+  const forceIds = options.forceIds instanceof Set ? options.forceIds : null;
+  const skipIds = options.skipIds instanceof Set ? options.skipIds : null;
+  const compareContentOnEqual = Boolean(options.compareContentOnEqual);
   let copiedCount = 0;
   for (const file of fs.readdirSync(srcConvDir)) {
     if (!file.endsWith('.db')) continue;
     const convId = file.slice(0, -3);
     if (onlyIds && !onlyIds.has(convId)) continue;
+    if (skipIds && skipIds.has(convId)) continue;
     const src = path.join(srcConvDir, file);
     const dest = path.join(destConvDir, file);
     checkpointSqliteDb(src);
-    if (!fs.existsSync(dest) || fs.statSync(src).mtimeMs > fs.statSync(dest).mtimeMs) {
+
+    let shouldCopy = false;
+    if (!fs.existsSync(dest)) {
+      shouldCopy = true;
+    } else if (forceIds && forceIds.has(convId)) {
+      shouldCopy = !filesHaveSameContent(src, dest);
+    } else if (compareContentOnEqual) {
+      shouldCopy = !filesHaveSameContent(src, dest);
+    } else {
+      shouldCopy = fs.statSync(src).mtimeMs > fs.statSync(dest).mtimeMs;
+    }
+
+    if (shouldCopy) {
       fs.copyFileSync(src, dest);
       removeSqliteSidecars(dest);
       copiedCount++;
@@ -398,23 +468,31 @@ export function copyConversationDbs(srcConvDir, destConvDir, onlyIds = null) {
 /**
  * Copies brain/<id>/ directories incrementally with optional JSON/JSONL transformation.
  */
-export function copyBrainDirs(srcBrainDir, destBrainDir, transformFn = null, onlyIds = null) {
+export function copyBrainDirs(srcBrainDir, destBrainDir, transformFn = null, onlyIds = null, options = {}) {
   if (!fs.existsSync(srcBrainDir)) return 0;
   if (onlyIds && onlyIds.size === 0) return 0;
   fs.mkdirSync(destBrainDir, { recursive: true });
+  const forceIds = options.forceIds instanceof Set ? options.forceIds : null;
+  const skipIds = options.skipIds instanceof Set ? options.skipIds : null;
   let copiedCount = 0;
   for (const d of fs.readdirSync(srcBrainDir, { withFileTypes: true })) {
     if (!d.isDirectory()) continue;
     if (onlyIds && !onlyIds.has(d.name)) continue;
-    copyDirRecursive(path.join(srcBrainDir, d.name), path.join(destBrainDir, d.name), transformFn);
+    if (skipIds && skipIds.has(d.name)) continue;
+    copyDirRecursive(
+      path.join(srcBrainDir, d.name),
+      path.join(destBrainDir, d.name),
+      transformFn,
+      { forceOverwrite: Boolean(forceIds && forceIds.has(d.name)) }
+    );
     copiedCount++;
   }
   return copiedCount;
 }
 
-function exportClientStore(clientDir, outDir, homeDir = os.homedir()) {
+function exportClientStore(clientDir, outDir, homeDir = os.homedir(), options = {}) {
   if (!clientDir || !fs.existsSync(clientDir)) {
-    return { present: false, indexCount: 0, convCount: 0, brainCount: 0 };
+    return { present: false, indexCount: 0, convCount: 0, copiedConvCount: 0, brainCount: 0 };
   }
 
   fs.mkdirSync(outDir, { recursive: true });
@@ -425,37 +503,70 @@ function exportClientStore(clientDir, outDir, homeDir = os.homedir()) {
 
   const localSummaryDb = path.join(clientDir, 'conversation_summaries.db');
   checkpointSqliteDb(localSummaryDb);
-  const indexData = exportSummaries(localSummaryDb, homeDir);
-  fs.writeFileSync(path.join(outDir, 'conversations_index.json'), JSON.stringify(indexData, null, 2), 'utf8');
+  const localIndexData = exportSummaries(localSummaryDb, homeDir);
 
-  const srcConvsDir = path.join(clientDir, 'conversations');
-  if (fs.existsSync(srcConvsDir)) {
-    for (const file of fs.readdirSync(srcConvsDir)) {
-      if (file.endsWith('.db')) {
-        checkpointSqliteDb(path.join(srcConvsDir, file));
+  const indexOutPath = path.join(outDir, 'conversations_index.json');
+  const existingSyncIndex = options.mergeWithExisting !== false ? readJsonSafe(indexOutPath) : null;
+
+  let indexData = localIndexData;
+  let forceIds = null;
+  let skipIds = null;
+
+  if (existingSyncIndex && Array.isArray(existingSyncIndex.conversations)) {
+    const merged = mergeConversationIndexes(localIndexData, existingSyncIndex);
+    indexData = merged.indexData;
+    forceIds = new Set([...merged.localOnlyIds, ...merged.localNewerIds]);
+    for (const id of merged.equalIds) {
+      if (!fs.existsSync(path.join(outConversations, `${id}.db`))) {
+        forceIds.add(id);
       }
+    }
+    skipIds = new Set([...merged.remoteOnlyIds, ...merged.remoteNewerIds]);
+
+    const prevComparable = JSON.stringify({
+      conversations: existingSyncIndex.conversations,
+      parents: existingSyncIndex.parents || []
+    });
+    const nextComparable = JSON.stringify({
+      conversations: indexData.conversations,
+      parents: indexData.parents || []
+    });
+    if (prevComparable === nextComparable && existingSyncIndex.exportedAt) {
+      indexData.exportedAt = existingSyncIndex.exportedAt;
     }
   }
 
-  const convCount = copyMatchingFiles(
-    srcConvsDir,
-    outConversations,
-    f => f.endsWith('.db')
-  );
+  writeTextIfChanged(indexOutPath, JSON.stringify(indexData, null, 2));
+
+  const srcConvsDir = path.join(clientDir, 'conversations');
+  const copiedConvCount = copyConversationDbs(srcConvsDir, outConversations, null, {
+    forceIds,
+    skipIds,
+    compareContentOnEqual: true
+  });
+  const convCount = fs.existsSync(outConversations)
+    ? fs.readdirSync(outConversations).filter(f => f.endsWith('.db')).length
+    : 0;
 
   const annotationsCount = copyAnnotationsFiles(
     path.join(clientDir, 'annotations'),
     path.join(outDir, 'annotations'),
-    true
+    true,
+    null,
+    { forceIds, skipIds }
   );
 
   const transformExport = (content) => templatizePaths(content, homeDir);
-  const brainCount = copyBrainDirs(path.join(clientDir, 'brain'), outBrain, transformExport);
+  copyBrainDirs(path.join(clientDir, 'brain'), outBrain, transformExport, null, { forceIds, skipIds });
+  const brainCount = fs.existsSync(outBrain)
+    ? fs.readdirSync(outBrain, { withFileTypes: true }).filter(d => d.isDirectory()).length
+    : 0;
 
   return {
     present: true,
     indexCount: indexData.conversations.length,
     convCount,
+    copiedConvCount,
     annotationsCount,
     brainCount
   };
@@ -474,20 +585,68 @@ function importClientStore(inDir, clientDir, options = {}) {
 
   const indexData = JSON.parse(fs.readFileSync(indexJsonPath, 'utf8'));
   const localSummaryDb = path.join(clientDir, 'conversation_summaries.db');
-  const mergeStats = importAndMergeSummaries(localSummaryDb, indexData, options);
+  const decisions = {
+    addedIds: new Set(),
+    updatedIds: new Set(),
+    localNewerIds: new Set(),
+    equalIds: new Set()
+  };
+
+  const isCliTarget = Boolean(options.isCliTarget);
+  const effectiveOptions = {
+    ...options,
+    decisions,
+    transformRow: options.transformRow || (isCliTarget
+      ? (conv) => {
+          const belongsToDesktopProj = conv.project_id && conv.project_id !== 'default-cli-project';
+          return belongsToDesktopProj && conv.app_data_dir === 'antigravity-cli'
+            ? { ...conv, app_data_dir: 'antigravity' }
+            : conv;
+        }
+      : undefined)
+  };
+
+  const mergeStats = importAndMergeSummaries(localSummaryDb, indexData, effectiveOptions);
   if (mergeStats.added > 0 || mergeStats.updated > 0) {
     syncClientProtoSummaries(clientDir, localSummaryDb);
+    if (isCliTarget) {
+      syncCliMetadataCache(clientDir, localSummaryDb);
+    }
+  }
+
+  const localConvsDir = path.join(clientDir, 'conversations');
+  const forceIds = new Set([...decisions.addedIds, ...decisions.updatedIds]);
+  for (const conv of indexData.conversations || []) {
+    const id = conv?.conversation_id;
+    if (id && !decisions.localNewerIds.has(id) && !fs.existsSync(path.join(localConvsDir, `${id}.db`))) {
+      forceIds.add(id);
+    }
+  }
+  const skipDbIds = new Set(decisions.localNewerIds);
+  if (isCliTarget) {
+    for (const conv of indexData.conversations || []) {
+      const id = conv?.conversation_id;
+      if (!id) continue;
+      const belongsToDesktopProj = conv.project_id && conv.project_id !== 'default-cli-project';
+      if (belongsToDesktopProj && !fs.existsSync(path.join(localConvsDir, `${id}.db`))) {
+        skipDbIds.add(id);
+      }
+    }
   }
 
   const copiedDbCount = copyConversationDbs(
     path.join(inDir, 'conversations'),
-    path.join(clientDir, 'conversations')
+    localConvsDir,
+    null,
+    { forceIds, skipIds: skipDbIds }
   );
 
   copyAnnotationsFiles(
     path.join(inDir, 'annotations'),
     path.join(clientDir, 'annotations'),
-    true
+    true,
+    null,
+    { forceIds, skipIds: decisions.localNewerIds }
   );
 
   const transformImport = (content) => expandPaths(
@@ -500,7 +659,9 @@ function importClientStore(inDir, clientDir, options = {}) {
   const copiedBrainCount = copyBrainDirs(
     path.join(inDir, 'brain'),
     path.join(clientDir, 'brain'),
-    transformImport
+    transformImport,
+    null,
+    { forceIds, skipIds: decisions.localNewerIds }
   );
 
   return {
@@ -518,15 +679,37 @@ function exportCliExtras(cliDir, outCliDir, homeDir = os.homedir()) {
 
   const settingsPath = path.join(cliDir, 'settings.json');
   if (fs.existsSync(settingsPath)) {
-    const raw = fs.readFileSync(settingsPath, 'utf8');
-    fs.writeFileSync(path.join(outCliDir, 'settings.json'), templatizePaths(raw, homeDir), 'utf8');
+    const outSettingsPath = path.join(outCliDir, 'settings.json');
+    const templatizedRaw = templatizePaths(fs.readFileSync(settingsPath, 'utf8'), homeDir);
+    try {
+      const localSettings = JSON.parse(templatizedRaw);
+      const existingRemote = readJsonSafe(outSettingsPath, {});
+      const remoteTrusted = Array.isArray(existingRemote?.trustedWorkspaces) ? existingRemote.trustedWorkspaces : [];
+      const localTrusted = Array.isArray(localSettings?.trustedWorkspaces) ? localSettings.trustedWorkspaces : [];
+      const mergedTrusted = Array.from(new Set([...remoteTrusted, ...localTrusted]));
+      const merged = { ...existingRemote, ...localSettings };
+      if (mergedTrusted.length > 0) {
+        merged.trustedWorkspaces = mergedTrusted;
+      }
+      writeTextIfChanged(outSettingsPath, JSON.stringify(merged, null, 2));
+    } catch {
+      writeTextIfChanged(outSettingsPath, templatizedRaw);
+    }
     settingsExported = true;
   }
 
   const lastConvPath = path.join(cliDir, 'cache', 'last_conversations.json');
   if (fs.existsSync(lastConvPath)) {
-    const raw = fs.readFileSync(lastConvPath, 'utf8');
-    fs.writeFileSync(path.join(outCliDir, 'last_conversations.json'), templatizePaths(raw, homeDir), 'utf8');
+    const outLastPath = path.join(outCliDir, 'last_conversations.json');
+    const templatizedRaw = templatizePaths(fs.readFileSync(lastConvPath, 'utf8'), homeDir);
+    try {
+      const localLast = JSON.parse(templatizedRaw);
+      const existingRemote = readJsonSafe(outLastPath, {});
+      const merged = { ...existingRemote, ...localLast };
+      writeTextIfChanged(outLastPath, JSON.stringify(merged, null, 2));
+    } catch {
+      writeTextIfChanged(outLastPath, templatizedRaw);
+    }
     lastConversationsExported = true;
   }
 
@@ -610,31 +793,58 @@ function exportConfigStore(geminiConfigDir, projectsDir, outConfigDir, homeDir =
     for (const f of fs.readdirSync(projectsDir)) {
       if (f.endsWith('.json')) {
         const raw = fs.readFileSync(path.join(projectsDir, f), 'utf8');
-        fs.writeFileSync(path.join(outProjects, f), templatizePaths(raw, homeDir), 'utf8');
+        writeTextIfChanged(path.join(outProjects, f), templatizePaths(raw, homeDir));
         projectCount++;
       }
     }
   }
+  if (fs.existsSync(outProjects)) {
+    const syncProjectTotal = fs.readdirSync(outProjects).filter(f => f.endsWith('.json')).length;
+    if (syncProjectTotal > projectCount) projectCount = syncProjectTotal;
+  }
 
   let mcpExported = false;
+  const outMcpPath = path.join(outConfigDir, 'mcp_config.json');
   if (geminiConfigDir) {
     const mcpPath = path.join(geminiConfigDir, 'mcp_config.json');
     if (fs.existsSync(mcpPath)) {
       const raw = fs.readFileSync(mcpPath, 'utf8').trim();
       if (raw.length > 0) {
-        fs.writeFileSync(path.join(outConfigDir, 'mcp_config.json'), templatizePaths(raw, homeDir), 'utf8');
+        const templatizedRaw = templatizePaths(raw, homeDir);
+        try {
+          const localMcp = JSON.parse(templatizedRaw);
+          const existingRemote = readJsonSafe(outMcpPath, {});
+          const merged = { ...existingRemote, ...localMcp };
+          if (localMcp.mcpServers || existingRemote?.mcpServers) {
+            merged.mcpServers = {
+              ...(existingRemote?.mcpServers || {}),
+              ...(localMcp.mcpServers || {})
+            };
+          }
+          writeTextIfChanged(outMcpPath, JSON.stringify(merged, null, 2));
+        } catch {
+          writeTextIfChanged(outMcpPath, templatizedRaw);
+        }
         mcpExported = true;
       }
     }
   }
+  if (!mcpExported && fs.existsSync(outMcpPath)) {
+    mcpExported = true;
+  }
 
   return { projectCount, mcpExported };
+}
+
+function normalizeComparableFsPath(p) {
+  return p ? path.resolve(p).replace(/\\/g, '/').toLowerCase() : '';
 }
 
 async function importConfigStore(inConfigDir, geminiConfigDir, projectsDir, options = {}) {
   const targetHome = options.targetHome || os.homedir();
   const sourceHome = options.sourceHomeDir || '';
   const pathMappings = options.pathMappings || {};
+  const discoveredMappings = {};
 
   let copiedProjectCount = 0;
   const syncProjects = path.join(inConfigDir, 'projects');
@@ -646,8 +856,33 @@ async function importConfigStore(inConfigDir, geminiConfigDir, projectsDir, opti
       const expandedRaw = expandPaths(raw, targetHome, sourceHome, pathMappings);
       try {
         const projectObj = JSON.parse(expandedRaw);
+        const rawCandidatePaths = new Set();
+        try {
+          const rawObj = JSON.parse(raw);
+          for (const res of rawObj?.projectResources?.resources || []) {
+            const rawUri = res?.gitFolder?.folderUri || res?.workspaceUri || '';
+            if (rawUri && !rawUri.includes('{{USER_HOME}}')) {
+              const p = fromFileUri(rawUri);
+              if (p) rawCandidatePaths.add(p);
+            }
+          }
+        } catch {
+          // ignore
+        }
+        for (const res of projectObj?.projectResources?.resources || []) {
+          const uri = res?.gitFolder?.folderUri || res?.workspaceUri || '';
+          const p = fromFileUri(uri);
+          if (p) rawCandidatePaths.add(p);
+        }
+
         const resolvedPath = await resolveProjectLocalPath(projectObj, projectsDir, options);
         if (resolvedPath) {
+          const resolvedNorm = normalizeComparableFsPath(resolvedPath);
+          for (const oldPath of rawCandidatePaths) {
+            if (oldPath && normalizeComparableFsPath(oldPath) !== resolvedNorm) {
+              discoveredMappings[oldPath] = resolvedPath;
+            }
+          }
           const newUri = toFileUri(resolvedPath);
           if (projectObj.projectResources?.resources) {
             for (const res of projectObj.projectResources.resources) {
@@ -655,23 +890,24 @@ async function importConfigStore(inConfigDir, geminiConfigDir, projectsDir, opti
               if (res.workspaceUri) res.workspaceUri = newUri;
             }
           }
-          fs.writeFileSync(path.join(projectsDir, f), JSON.stringify(projectObj, null, 2), 'utf8');
+          writeTextIfChanged(path.join(projectsDir, f), JSON.stringify(projectObj, null, 2));
         } else {
-          fs.writeFileSync(path.join(projectsDir, f), expandedRaw, 'utf8');
+          writeTextIfChanged(path.join(projectsDir, f), expandedRaw);
         }
       } catch {
-        fs.writeFileSync(path.join(projectsDir, f), expandedRaw, 'utf8');
+        writeTextIfChanged(path.join(projectsDir, f), expandedRaw);
       }
       copiedProjectCount++;
     }
   }
 
+  const effectiveMappings = { ...discoveredMappings, ...pathMappings };
   let mcpMerged = false;
   const syncMcpPath = path.join(inConfigDir, 'mcp_config.json');
   if (geminiConfigDir && fs.existsSync(syncMcpPath)) {
     const rawMcp = fs.readFileSync(syncMcpPath, 'utf8').trim();
     if (rawMcp) {
-      const expandedRaw = expandPaths(rawMcp, targetHome, sourceHome, pathMappings);
+      const expandedRaw = expandPaths(rawMcp, targetHome, sourceHome, effectiveMappings);
       try {
         const remoteMcp = JSON.parse(expandedRaw);
         const localMcpPath = path.join(geminiConfigDir, 'mcp_config.json');
@@ -687,18 +923,18 @@ async function importConfigStore(inConfigDir, geminiConfigDir, projectsDir, opti
           };
         }
         fs.mkdirSync(geminiConfigDir, { recursive: true });
-        fs.writeFileSync(localMcpPath, JSON.stringify(merged, null, 2), 'utf8');
+        writeTextIfChanged(localMcpPath, JSON.stringify(merged, null, 2));
         mcpMerged = true;
       } catch {
         // Fallback: copy raw expanded text if non-standard JSON
         fs.mkdirSync(geminiConfigDir, { recursive: true });
-        fs.writeFileSync(path.join(geminiConfigDir, 'mcp_config.json'), expandedRaw, 'utf8');
+        writeTextIfChanged(path.join(geminiConfigDir, 'mcp_config.json'), expandedRaw);
         mcpMerged = true;
       }
     }
   }
 
-  return { copiedProjectCount, mcpMerged };
+  return { copiedProjectCount, mcpMerged, discoveredMappings };
 }
 
 function cleanupLegacyV1RootEntries(syncDir) {
@@ -744,16 +980,42 @@ export function exportToSyncDir(cfgOrAntigravityDir, syncDirOrOptions = {}, lega
   const homeDir = options.homeDir || os.homedir();
   const syncDir = cfg.syncDir;
   const mask = resolveTargetMask(cfg, options.target || 'all');
+  const guardPath = options.guardPath || cfg.guardPath || '';
+  const desktopDir = cfg.desktopDir || cfg.antigravityDir || '';
+  const desktopDbPath = desktopDir ? path.join(desktopDir, 'conversation_summaries.db') : '';
+  const cliDbPath = cfg.cliDir ? path.join(cfg.cliDir, 'conversation_summaries.db') : '';
 
   fs.mkdirSync(syncDir, { recursive: true });
 
-  const desktop = mask.desktop
-    ? exportClientStore(cfg.desktopDir || cfg.antigravityDir, path.join(syncDir, 'desktop'), homeDir)
-    : { present: false, indexCount: 0, convCount: 0, brainCount: 0 };
+  if (guardPath) {
+    const syncGuardPath = path.join(syncDir, 'metadata_guard.json');
+    if (fs.existsSync(syncGuardPath)) {
+      syncMetadataGuardFile(guardPath, syncGuardPath, 'import');
+    }
+    const healRes = healClientDbsFromGuard({
+      desktopDir: mask.desktop ? desktopDir : '',
+      cliDir: mask.cli ? cfg.cliDir : '',
+      desktopDbPath: mask.desktop ? desktopDbPath : '',
+      cliDbPath: mask.cli ? cliDbPath : '',
+      guardPath
+    });
+    if (healRes.cliHealed > 0 && cfg.cliDir && cliDbPath) {
+      syncCliMetadataCache(cfg.cliDir, cliDbPath);
+    }
+    recordMetadataGuard({
+      desktopDbPath: mask.desktop ? desktopDbPath : '',
+      cliDbPath: mask.cli ? cliDbPath : '',
+      guardPath
+    });
+  }
 
-  let cli = { present: false, indexCount: 0, convCount: 0, brainCount: 0, settingsExported: false, lastConversationsExported: false };
+  const desktop = mask.desktop
+    ? exportClientStore(desktopDir, path.join(syncDir, 'desktop'), homeDir, options)
+    : { present: false, indexCount: 0, convCount: 0, copiedConvCount: 0, brainCount: 0 };
+
+  let cli = { present: false, indexCount: 0, convCount: 0, copiedConvCount: 0, brainCount: 0, settingsExported: false, lastConversationsExported: false };
   if (mask.cli && cfg.cliDir && fs.existsSync(cfg.cliDir)) {
-    const cliBase = exportClientStore(cfg.cliDir, path.join(syncDir, 'cli'), homeDir);
+    const cliBase = exportClientStore(cfg.cliDir, path.join(syncDir, 'cli'), homeDir, options);
     const extras = exportCliExtras(cfg.cliDir, path.join(syncDir, 'cli'), homeDir);
     cli = { ...cliBase, ...extras };
   }
@@ -762,18 +1024,33 @@ export function exportToSyncDir(cfgOrAntigravityDir, syncDirOrOptions = {}, lega
     ? exportConfigStore(cfg.geminiConfigDir, cfg.projectsDir, path.join(syncDir, 'config'), homeDir)
     : { projectCount: 0, mcpExported: false };
 
-  const manifest = {
-    schemaVersion: SYNC_SCHEMA_VERSION,
-    toolVersion: TOOL_VERSION,
-    sourceHomeDir: homeDir,
-    updatedAt: new Date().toISOString(),
-    targets: {
-      desktop: desktop.present,
-      cli: cli.present,
-      config: Boolean(config.projectCount > 0 || config.mcpExported)
-    }
+  if (guardPath) {
+    syncMetadataGuardFile(guardPath, path.join(syncDir, 'metadata_guard.json'), 'export');
+  }
+
+  const manifestPath = path.join(syncDir, 'manifest.json');
+  const existingManifest = readJsonSafe(manifestPath, null);
+  const nextTargets = {
+    desktop: desktop.present || Boolean(existingManifest?.targets?.desktop),
+    cli: cli.present || Boolean(existingManifest?.targets?.cli),
+    config: Boolean(config.projectCount > 0 || config.mcpExported || existingManifest?.targets?.config)
   };
-  fs.writeFileSync(path.join(syncDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
+  const manifestUnchanged = existingManifest &&
+    existingManifest.schemaVersion === SYNC_SCHEMA_VERSION &&
+    existingManifest.toolVersion === TOOL_VERSION &&
+    existingManifest.sourceHomeDir === homeDir &&
+    JSON.stringify(existingManifest.targets || {}) === JSON.stringify(nextTargets);
+
+  if (!manifestUnchanged) {
+    const manifest = {
+      schemaVersion: SYNC_SCHEMA_VERSION,
+      toolVersion: TOOL_VERSION,
+      sourceHomeDir: homeDir,
+      updatedAt: new Date().toISOString(),
+      targets: nextTargets
+    };
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+  }
 
   cleanupLegacyV1RootEntries(syncDir);
 
@@ -811,16 +1088,21 @@ export async function importFromSyncDir(cfgOrSyncDir, maybeAntigravityDir = {}, 
   const syncDir = cfg.syncDir;
   const manifestPath = path.join(syncDir, 'manifest.json');
   const legacyIndexPath = path.join(syncDir, 'conversations_index.json');
+  const guardPath = options.guardPath || cfg.guardPath || '';
 
   // Legacy v1 sync repository fallback
   if (!fs.existsSync(manifestPath) && fs.existsSync(legacyIndexPath)) {
-    const desktop = importClientStore(syncDir, cfg.desktopDir || cfg.antigravityDir, options);
+    const legacyIndexPreview = readJsonSafe(legacyIndexPath);
     const config = await importConfigStore(
       syncDir,
       '',
       cfg.projectsDir,
-      { ...options, sourceHomeDir: desktop.sourceHomeDir }
+      { ...options, sourceHomeDir: legacyIndexPreview?.sourceHomeDir || '' }
     );
+    const desktop = importClientStore(syncDir, cfg.desktopDir || cfg.antigravityDir, {
+      ...options,
+      pathMappings: { ...(config.discoveredMappings || {}), ...(options.pathMappings || {}) }
+    });
     return {
       schemaVersion: 1,
       desktop,
@@ -840,25 +1122,19 @@ export async function importFromSyncDir(cfgOrSyncDir, maybeAntigravityDir = {}, 
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const mask = resolveTargetMask(cfg, options.target || 'all');
 
-  let desktop = { present: false, mergeStats: { added: 0, updated: 0, skipped: 0, total: 0, parentsMerged: 0 }, copiedDbCount: 0, copiedBrainCount: 0, sourceHomeDir: '' };
-  if (mask.desktop && fs.existsSync(path.join(syncDir, 'desktop', 'conversations_index.json'))) {
-    desktop = importClientStore(path.join(syncDir, 'desktop'), cfg.desktopDir || cfg.antigravityDir, options);
+  if (guardPath) {
+    const syncGuardPath = path.join(syncDir, 'metadata_guard.json');
+    if (fs.existsSync(syncGuardPath)) {
+      syncMetadataGuardFile(guardPath, syncGuardPath, 'import');
+    }
   }
 
-  let cli = { present: false, mergeStats: { added: 0, updated: 0, skipped: 0, total: 0, parentsMerged: 0 }, copiedDbCount: 0, copiedBrainCount: 0, settingsMerged: false, lastConversationsMerged: false };
-  if (mask.cli && cfg.cliDir && fs.existsSync(path.join(syncDir, 'cli'))) {
-    const cliStoreRes = importClientStore(path.join(syncDir, 'cli'), cfg.cliDir, {
-      ...options,
-      includeParentsTable: true
-    });
-    const cliExtrasRes = importCliExtras(path.join(syncDir, 'cli'), cfg.cliDir, {
-      ...options,
-      sourceHomeDir: cliStoreRes.sourceHomeDir || manifest.sourceHomeDir || ''
-    });
-    cli = { ...cliStoreRes, ...cliExtrasRes };
-  }
+  const desktopIndexPreview = readJsonSafe(path.join(syncDir, 'desktop', 'conversations_index.json'));
+  const cliIndexPreview = readJsonSafe(path.join(syncDir, 'cli', 'conversations_index.json'));
+  const fallbackSourceHome = desktopIndexPreview?.sourceHomeDir || cliIndexPreview?.sourceHomeDir || manifest.sourceHomeDir || '';
 
-  let config = { copiedProjectCount: 0, mcpMerged: false };
+  // Resolve shared config & Smart Project Locator path mappings FIRST so conversations get remapped paths too
+  let config = { copiedProjectCount: 0, mcpMerged: false, discoveredMappings: {} };
   if (mask.config && fs.existsSync(path.join(syncDir, 'config'))) {
     config = await importConfigStore(
       path.join(syncDir, 'config'),
@@ -866,9 +1142,61 @@ export async function importFromSyncDir(cfgOrSyncDir, maybeAntigravityDir = {}, 
       cfg.projectsDir,
       {
         ...options,
-        sourceHomeDir: desktop.sourceHomeDir || manifest.sourceHomeDir || ''
+        sourceHomeDir: fallbackSourceHome
       }
     );
+  }
+
+  const mergedPathMappings = {
+    ...(config.discoveredMappings || {}),
+    ...(options.pathMappings || {})
+  };
+  const clientImportOptions = {
+    ...options,
+    pathMappings: mergedPathMappings
+  };
+
+  let desktop = { present: false, mergeStats: { added: 0, updated: 0, skipped: 0, total: 0, parentsMerged: 0 }, copiedDbCount: 0, copiedBrainCount: 0, sourceHomeDir: '' };
+  const desktopDir = cfg.desktopDir || cfg.antigravityDir || '';
+  if (mask.desktop && fs.existsSync(path.join(syncDir, 'desktop', 'conversations_index.json'))) {
+    desktop = importClientStore(path.join(syncDir, 'desktop'), desktopDir, {
+      ...clientImportOptions,
+      isDesktopTarget: true
+    });
+  }
+
+  let cli = { present: false, mergeStats: { added: 0, updated: 0, skipped: 0, total: 0, parentsMerged: 0 }, copiedDbCount: 0, copiedBrainCount: 0, settingsMerged: false, lastConversationsMerged: false };
+  if (mask.cli && cfg.cliDir && fs.existsSync(path.join(syncDir, 'cli'))) {
+    const cliStoreRes = importClientStore(path.join(syncDir, 'cli'), cfg.cliDir, {
+      ...clientImportOptions,
+      includeParentsTable: true,
+      isCliTarget: true
+    });
+    const cliExtrasRes = importCliExtras(path.join(syncDir, 'cli'), cfg.cliDir, {
+      ...clientImportOptions,
+      sourceHomeDir: cliStoreRes.sourceHomeDir || manifest.sourceHomeDir || ''
+    });
+    cli = { ...cliStoreRes, ...cliExtrasRes };
+  }
+
+  if (guardPath) {
+    const desktopDbPath = desktopDir ? path.join(desktopDir, 'conversation_summaries.db') : '';
+    const cliDbPath = cfg.cliDir ? path.join(cfg.cliDir, 'conversation_summaries.db') : '';
+    const healRes = healClientDbsFromGuard({
+      desktopDir: mask.desktop ? desktopDir : '',
+      cliDir: mask.cli ? cfg.cliDir : '',
+      desktopDbPath: mask.desktop ? desktopDbPath : '',
+      cliDbPath: mask.cli ? cliDbPath : '',
+      guardPath
+    });
+    if (healRes.cliHealed > 0 && cfg.cliDir && cliDbPath) {
+      syncCliMetadataCache(cfg.cliDir, cliDbPath);
+    }
+    recordMetadataGuard({
+      desktopDbPath: mask.desktop ? desktopDbPath : '',
+      cliDbPath: mask.cli ? cliDbPath : '',
+      guardPath
+    });
   }
 
   return {

@@ -31,8 +31,8 @@ Google Antigravity는 데스크톱 앱과 CLI(`agy`)가 로컬에서 별도 디�
   - Desktop 전용 `.db`를 CLI 폴더에 중복 생성하지 않아 Desktop의 CLI 재태깅/제목 손실 충돌을 방지하며, `agy` CLI의 `/resume` 두 번째 탭(`Tab` 키)에서 Desktop 대화를 이어서 열 수 있습니다.
 * 🛡️ **자동 치유 메타데이터 장부 & 백그라운드 감시 (`agy-sync watch`)**:
   `metadata_guard.json` 장부에 정상 제목·프로젝트·소스를 기록해 두어 Desktop 재스캔으로 메타데이터가 덮어쓰여도 자동 치유하며, `agy-sync watch --install`로 앱/CLI 종료 직후 자동 브리지를 실행할 수 있습니다.
-* 🔄 **클라이언트 분리 저장 + 다중 PC 동기화 (`push` / `pull`)**:
-  `sync-data/` 내부를 `desktop/`, `cli/`, `config/`로 분리 저장해 복잡도를 낮추면서도, CLI의 `settings.json`(`trustedWorkspaces` 합집합 병합)과 `last_conversations.json`, 공통 `projects/*.json` 및 `mcp_config.json`, `annotations/`까지 함께 동기화합니다. (`init` 시 `gh` 로그인 상태면 GitHub 비공개 저장소 자동 생성·연결 지원, 기존 v1 저장소 자동 업그레이드)
+* 🔄 **클라이언트 분리 저장 + 무손실 합집합 다중 PC 동기화 (`push` / `pull`)**:
+  `sync-data/` 내부를 `desktop/`, `cli/`, `config/`로 분리 저장하며, `push` 시에도 원격 `conversations_index.json`, `settings.json`(`trustedWorkspaces`), `last_conversations.json`, `mcp_config.json`을 합집합 병합해 다른 PC의 미수신 대화가 덮어쓰여 사라지지 않습니다. Git의 파일 `mtime` 대신 대화 타임스탬프·해시 기준으로 `.db`/`brain`/`annotations/`를 선택 동기화하며 `metadata_guard.json`·CLI 캐시 동기화 및 Smart Project Locator 경로 전파까지 함께 적용됩니다. (`init` 시 `gh` 로그인 상태면 GitHub 비공개 저장소 자동 생성·연결 지원, 기존 v1 저장소 자동 업그레이드)
 * 🔒 **안전한 프로세스 종료 & WAL 읽기 보호**:
   `bridge` / `push` / `pull` / `restore` 실행 시(외부 터미널에서) 실행 중인 `Antigravity` / `agy` / 잔여 `language_server` 프로세스를 안전하게 종료한 뒤 진행하며, Antigravity 내부 터미널에서의 자가 종료를 차단하고 `.gitattributes`(`* -text`)로 대량 CRLF 경고를 방지합니다.
 * ⚡ **Zero External Dependencies (무의존성)**:

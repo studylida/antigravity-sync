@@ -113,13 +113,32 @@ export function expandPaths(text, targetHomeDir = os.homedir(), sourceHomeDir = 
   // 3. Apply optional custom path mappings (e.g. from "D:/projects" to "C:/Users/dam/workspace")
   if (customMappings && typeof customMappings === 'object') {
     for (const [fromPath, toPath] of Object.entries(customMappings)) {
-      if (fromPath && toPath) {
-        const fromParts = getPathParts(fromPath);
-        const toParts = getPathParts(toPath);
-        if (fromParts.length > 0 && toParts.length > 0) {
-          result = result.replaceAll(fromParts.join('/'), toParts.join('/'));
-          result = result.replaceAll(fromParts.join('\\'), toParts.join('\\'));
-          result = result.replaceAll(fromParts.join('\\\\'), toParts.join('\\\\'));
+      if (!fromPath || !toPath) continue;
+      const toParts = getPathParts(toPath);
+      if (toParts.length === 0) continue;
+
+      const toIsWindows = toParts[0].includes(':');
+      const toFwd = toIsWindows ? toParts.join('/') : '/' + toParts.join('/');
+      const toBack = toIsWindows ? toParts.join('\\') : toFwd;
+      const toDouble = toIsWindows ? toParts.join('\\\\') : toFwd;
+      const toUri = 'file:///' + toFwd.replace(/^\//, '');
+      const toUriEnc = toIsWindows
+        ? 'file:///' + toParts[0].replace(':', '%3A').toLowerCase() + '/' + toParts.slice(1).join('/')
+        : toUri;
+
+      const fromVars = getHomeVariations(fromPath);
+      for (const { search, replace } of fromVars) {
+        if (!search) continue;
+        if (search.startsWith('file:///') && search.includes('%3A')) {
+          result = result.replaceAll(search, toUriEnc);
+        } else if (replace === 'file:///{{USER_HOME}}') {
+          result = result.replaceAll(search, toUri);
+        } else if (replace === '{{USER_HOME_JSON}}') {
+          result = result.replaceAll(search, toDouble);
+        } else if (replace === '{{USER_HOME_BACKSLASH}}') {
+          result = result.replaceAll(search, toBack);
+        } else {
+          result = result.replaceAll(search, toFwd);
         }
       }
     }

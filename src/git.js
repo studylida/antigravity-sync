@@ -211,7 +211,33 @@ function getRemoteBranchInfo(dir) {
   return { empty: false, defaultBranch, branches };
 }
 
-export function gitPull(dir) {
+function abortInProgressGitState(dir) {
+  const gitDir = path.join(dir, '.git');
+  if (fs.existsSync(path.join(gitDir, 'rebase-merge')) || fs.existsSync(path.join(gitDir, 'rebase-apply'))) {
+    try {
+      runGit(['rebase', '--abort'], dir);
+    } catch {
+      // ignore if nothing to abort
+    }
+  }
+  if (fs.existsSync(path.join(gitDir, 'MERGE_HEAD'))) {
+    try {
+      runGit(['merge', '--abort'], dir);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function isGitConflictError(err) {
+  return /CONFLICT|could not apply|merge conflict|fix conflicts|unmerged files/i.test(err?.message || '');
+}
+
+function isNonFastForwardError(err) {
+  return /non-fast-forward|fetch first|failed to push some refs/i.test(err?.message || '');
+}
+
+export function gitPull(dir, options = {}) {
   if (!isGitRepo(dir)) return { pulled: false, reason: 'not_git_repo' };
 
   try {
@@ -221,6 +247,7 @@ export function gitPull(dir) {
   }
 
   ensureGitConfigAndAttributes(dir);
+  abortInProgressGitState(dir);
 
   const remoteInfo = getRemoteBranchInfo(dir);
   if (remoteInfo.empty) {
@@ -267,42 +294,69 @@ export function gitPull(dir) {
     stashed = true;
   }
 
+  let pullResult;
   try {
     const out = runGit(['pull', '--rebase', 'origin', targetBranch], dir, 300000);
-    return { pulled: true, output: out, branch: targetBranch };
+    pullResult = { pulled: true, output: out, branch: targetBranch };
   } catch (err) {
     if (err.message.includes('couldn\'t find remote ref') || err.message.includes('fatal: couldn\'t find remote')) {
-      return { pulled: false, reason: 'remote_empty' };
+      pullResult = { pulled: false, reason: 'remote_empty' };
+    } else if (isGitConflictError(err)) {
+      abortInProgressGitState(dir);
+      if (options.recoverConflictByReset) {
+        runGit(['fetch', 'origin', targetBranch], dir, 300000);
+        runGit(['reset', '--hard', `origin/${targetBranch}`], dir, 300000);
+        ensureGitConfigAndAttributes(dir);
+        pullResult = { pulled: true, branch: targetBranch, conflictRecovered: true };
+      } else {
+        throw err;
+      }
+    } else {
+      throw err;
     }
-    throw err;
   } finally {
     if (stashed) {
       try {
         runGit(['stash', 'pop'], dir, 300000);
       } catch (stashErr) {
-        console.warn(`[Git] Auto-stash restore had conflicts (stash preserved in git stash list): ${stashErr.message}`);
+        if (options.recoverConflictByReset) {
+          // Drop conflicted stash so JSON indexes are never left with conflict markers
+          try {
+            runGit(['reset', '--hard', 'HEAD'], dir, 300000);
+            runGit(['stash', 'drop'], dir, 300000);
+          } catch {
+            // ignore cleanup error
+          }
+          console.warn('[Git] 원격 변경과 로컬 임시 변경이 충돌하여 원격 기준으로 정리했습니다.');
+        } else {
+          console.warn(`[Git] Auto-stash restore had conflicts (stash preserved in git stash list): ${stashErr.message}`);
+        }
       }
     }
   }
+
+  return pullResult;
 }
 
-export function gitCommitAndPush(dir, commitMessage = 'Auto sync by antigravity-sync') {
+export function gitCommitAndPush(dir, commitMessage = 'Auto sync by antigravity-sync', options = {}) {
   if (!isGitRepo(dir)) return { committed: false, pushed: false };
 
   ensureGitConfigAndAttributes(dir);
+  abortInProgressGitState(dir);
   removeNestedGitDirs(dir);
   runGit(['add', '-A'], dir, 300000);
 
-  // Check if anything is staged
+  let hasStagedChanges = false;
   try {
     execFileSync('git', ['diff', '--cached', '--quiet'], { cwd: dir, stdio: 'ignore' });
-    // Nothing to commit
-    return { committed: false, pushed: false, message: 'No changes to commit' };
+    hasStagedChanges = false;
   } catch {
-    // There are changes
+    hasStagedChanges = true;
   }
 
-  runGit(['commit', '-m', commitMessage], dir, 300000);
+  if (hasStagedChanges) {
+    runGit(['commit', '-m', commitMessage], dir, 300000);
+  }
 
   let hasRemote = false;
   try {
@@ -313,11 +367,44 @@ export function gitCommitAndPush(dir, commitMessage = 'Auto sync by antigravity-
   }
 
   if (!hasRemote) {
-    return { committed: true, pushed: false, reason: 'no_remote' };
+    return hasStagedChanges
+      ? { committed: true, pushed: false, reason: 'no_remote' }
+      : { committed: false, pushed: false, message: 'No changes to commit' };
   }
 
-  runGit(['push', '-u', 'origin', 'HEAD'], dir, 300000);
-  return { committed: true, pushed: true };
+  if (!hasStagedChanges) {
+    // Check if there are unpushed local commits waiting to be pushed
+    let aheadCount = 0;
+    try {
+      const countStr = runGit(['rev-list', '--count', '@{u}..HEAD'], dir);
+      aheadCount = Number(countStr) || 0;
+    } catch {
+      aheadCount = 0;
+    }
+    if (aheadCount === 0) {
+      return { committed: false, pushed: false, message: 'No changes to commit' };
+    }
+  }
+
+  try {
+    runGit(['push', '-u', 'origin', 'HEAD'], dir, 300000);
+    return { committed: hasStagedChanges, pushed: true };
+  } catch (err) {
+    if (isNonFastForwardError(err) && typeof options.onPushConflict === 'function') {
+      gitPull(dir, { recoverConflictByReset: true });
+      options.onPushConflict();
+      removeNestedGitDirs(dir);
+      runGit(['add', '-A'], dir, 300000);
+      try {
+        execFileSync('git', ['diff', '--cached', '--quiet'], { cwd: dir, stdio: 'ignore' });
+      } catch {
+        runGit(['commit', '-m', `${commitMessage} (merged remote)`], dir, 300000);
+      }
+      runGit(['push', '-u', 'origin', 'HEAD'], dir, 300000);
+      return { committed: true, pushed: true, retried: true };
+    }
+    throw err;
+  }
 }
 
 export function getGitStatus(dir) {

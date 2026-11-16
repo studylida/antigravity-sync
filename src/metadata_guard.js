@@ -262,3 +262,117 @@ export function recordMetadataGuard({
   saveMetadataGuard(guard, guardPath);
   return Object.keys(convs).length;
 }
+
+/**
+ * Keeps CLI's cache/conversation_metadata.json aligned with conversation_summaries.db.
+ */
+export function syncCliMetadataCache(cliDir, cliDbPath) {
+  if (!cliDir || !cliDbPath) return;
+  const cachePath = path.join(cliDir, 'cache', 'conversation_metadata.json');
+  if (!fs.existsSync(cachePath) || !fs.existsSync(cliDbPath)) return;
+
+  let rows = [];
+  const db = new DatabaseSync(cliDbPath, { readOnly: true });
+  try {
+    const hasTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_summaries'").get();
+    if (!hasTable) return;
+    rows = db.prepare('SELECT conversation_id, title, app_data_dir, project_id, step_count FROM conversation_summaries').all();
+  } catch {
+    return;
+  } finally {
+    db.close();
+  }
+
+  try {
+    const raw = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+    if (!raw || typeof raw !== 'object' || !raw.conversations) return;
+    let dirty = false;
+    for (const c of rows) {
+      const entry = raw.conversations[c.conversation_id];
+      if (!entry?.summary) continue;
+      if (c.title && entry.summary.Title !== c.title) {
+        entry.summary.Title = c.title;
+        dirty = true;
+      }
+      if (c.app_data_dir && entry.summary.AppDataDir !== c.app_data_dir) {
+        entry.summary.AppDataDir = c.app_data_dir;
+        dirty = true;
+      }
+      if (c.project_id && entry.summary.ProjectID !== c.project_id) {
+        entry.summary.ProjectID = c.project_id;
+        dirty = true;
+      }
+      if (Number.isFinite(c.step_count) && entry.summary.NumSteps !== c.step_count) {
+        entry.summary.NumSteps = c.step_count;
+        dirty = true;
+      }
+    }
+    if (dirty) {
+      fs.writeFileSync(cachePath, JSON.stringify(raw, null, 2), 'utf8');
+    }
+  } catch {
+    // Non-fatal cache sync
+  }
+}
+
+/**
+ * Non-destructively merges an incoming guard ledger into a base guard ledger.
+ */
+export function mergeMetadataGuardData(baseGuard, incomingGuard) {
+  const baseConvs = baseGuard?.conversations || {};
+  const inConvs = incomingGuard?.conversations || {};
+  const merged = { ...baseConvs };
+
+  for (const [id, inc] of Object.entries(inConvs)) {
+    if (!inc || typeof inc !== 'object') continue;
+    const prev = merged[id];
+    if (!prev) {
+      merged[id] = { ...inc };
+      continue;
+    }
+
+    const next = { ...prev };
+    if (inc.title) {
+      const prevTime = parseTimeMs(prev.titleUpdatedAt);
+      const incTime = parseTimeMs(inc.titleUpdatedAt);
+      if (!prev.title || !Number.isFinite(prevTime) || (Number.isFinite(incTime) && incTime > prevTime)) {
+        next.title = inc.title;
+        if (inc.titleUpdatedAt) next.titleUpdatedAt = inc.titleUpdatedAt;
+      }
+    }
+    if (inc.desktopSource === '') {
+      next.desktopSource = '';
+    }
+    if (inc.desktopProjectId && inc.desktopProjectId !== 'default-cli-project') {
+      if (!next.desktopProjectId || next.desktopProjectId === 'default-cli-project' || next.desktopProjectId === 'outside-of-project') {
+        next.desktopProjectId = inc.desktopProjectId;
+      }
+    }
+    if (typeof inc.isDesktopNative === 'boolean' && typeof next.isDesktopNative !== 'boolean') {
+      next.isDesktopNative = inc.isDesktopNative;
+    }
+    next.updatedAt = new Date().toISOString();
+    merged[id] = next;
+  }
+
+  return {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    conversations: merged
+  };
+}
+
+export function syncMetadataGuardFile(localGuardPath, syncGuardPath, direction = 'merge-both') {
+  if (!localGuardPath || !syncGuardPath) return 0;
+  const localGuard = loadMetadataGuard(localGuardPath);
+  const syncGuard = loadMetadataGuard(syncGuardPath);
+  const merged = mergeMetadataGuardData(localGuard, syncGuard);
+  if (Object.keys(merged.conversations).length === 0) return 0;
+  if (direction === 'export' || direction === 'merge-both') {
+    saveMetadataGuard(merged, syncGuardPath);
+  }
+  if (direction === 'import' || direction === 'merge-both') {
+    saveMetadataGuard(merged, localGuardPath);
+  }
+  return Object.keys(merged.conversations).length;
+}

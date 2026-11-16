@@ -91,6 +91,167 @@ function parseTimestampMs(value) {
   return new Date(value).getTime();
 }
 
+/**
+ * Compares two conversation summary records by timestamp first, then step_count.
+ * Returns 1 if `a` is strictly newer, -1 if `b` is strictly newer, or 0 if equal.
+ */
+export function compareConversationFreshness(a, b) {
+  if (!a && !b) return 0;
+  if (a && !b) return 1;
+  if (!a && b) return -1;
+
+  const aTime = parseTimestampMs(a.last_modified_time);
+  const bTime = parseTimestampMs(b.last_modified_time);
+  const aHasTime = Number.isFinite(aTime);
+  const bHasTime = Number.isFinite(bTime);
+
+  if (aHasTime && bHasTime && aTime !== bTime) {
+    return aTime > bTime ? 1 : -1;
+  }
+  if (aHasTime !== bHasTime) {
+    return aHasTime ? 1 : -1;
+  }
+
+  const aSteps = Number(a.step_count || 0);
+  const bSteps = Number(b.step_count || 0);
+  if (aSteps !== bSteps) {
+    return aSteps > bSteps ? 1 : -1;
+  }
+  return 0;
+}
+
+function normalizeRemoteTemplatizedRow(row, remoteSourceHome) {
+  if (!row || typeof row !== 'object') return row;
+  if (!remoteSourceHome) return { ...row };
+  const copy = { ...row };
+  if (copy.workspace_uris) {
+    copy.workspace_uris = templatizePaths(copy.workspace_uris, remoteSourceHome);
+  }
+  if (copy.project_id) {
+    copy.project_id = templatizePaths(copy.project_id, remoteSourceHome);
+  }
+  return copy;
+}
+
+/**
+ * Non-destructively merges a newly exported local conversations index with an existing
+ * sync repository conversations index so remote-only or remote-newer entries are preserved.
+ */
+export function mergeConversationIndexes(localIndexData, existingSyncIndexData) {
+  const localConvs = Array.isArray(localIndexData?.conversations) ? localIndexData.conversations : [];
+  const remoteConvs = Array.isArray(existingSyncIndexData?.conversations) ? existingSyncIndexData.conversations : [];
+  const remoteSourceHome = existingSyncIndexData?.sourceHomeDir || '';
+
+  const localMap = new Map(localConvs.filter(c => c?.conversation_id).map(c => [c.conversation_id, { ...c }]));
+  const remoteMap = new Map(
+    remoteConvs
+      .filter(c => c?.conversation_id)
+      .map(c => [c.conversation_id, normalizeRemoteTemplatizedRow(c, remoteSourceHome)])
+  );
+
+  const mergedConversations = [];
+  const localOnlyIds = new Set();
+  const localNewerIds = new Set();
+  const equalIds = new Set();
+  const remoteNewerIds = new Set();
+  const remoteOnlyIds = new Set();
+
+  for (const [id, local] of localMap) {
+    const remote = remoteMap.get(id);
+    if (!remote) {
+      localOnlyIds.add(id);
+      mergedConversations.push(local);
+      continue;
+    }
+
+    const cmp = compareConversationFreshness(local, remote);
+    if (cmp > 0) {
+      localNewerIds.add(id);
+      const winner = { ...local };
+      if (!winner.title && remote.title) {
+        winner.title = remote.title;
+        if (winner.raw_summary) {
+          const patched = patchRawSummaryBlob(winner.raw_summary, { title: winner.title });
+          winner.raw_summary = Buffer.isBuffer(patched) ? patched.toString('base64') : winner.raw_summary;
+        }
+      }
+      mergedConversations.push(winner);
+    } else if (cmp < 0) {
+      remoteNewerIds.add(id);
+      const winner = { ...remote };
+      if (!winner.title && local.title) {
+        winner.title = local.title;
+        if (winner.raw_summary) {
+          const patched = patchRawSummaryBlob(winner.raw_summary, { title: winner.title });
+          winner.raw_summary = Buffer.isBuffer(patched) ? patched.toString('base64') : winner.raw_summary;
+        }
+      }
+      mergedConversations.push(winner);
+    } else {
+      equalIds.add(id);
+      const winner = { ...local };
+      if (!winner.title && remote.title) {
+        winner.title = remote.title;
+      }
+      // Preserve clean Desktop sidebar visibility if existing sync already mapped it cleanly
+      if (winner.source === 'CORTEX_TRAJECTORY_SOURCE_CLI' && remote.source === '') {
+        winner.source = '';
+        if (remote.project_id && remote.project_id !== 'default-cli-project') {
+          winner.project_id = remote.project_id;
+        }
+      }
+      if (winner.raw_summary && (winner.title !== local.title || winner.source !== local.source || winner.project_id !== local.project_id)) {
+        const patched = patchRawSummaryBlob(winner.raw_summary, {
+          source: winner.source,
+          title: winner.title,
+          projectId: winner.project_id
+        });
+        winner.raw_summary = Buffer.isBuffer(patched) ? patched.toString('base64') : winner.raw_summary;
+      }
+      mergedConversations.push(winner);
+    }
+  }
+
+  for (const [id, remote] of remoteMap) {
+    if (!localMap.has(id)) {
+      remoteOnlyIds.add(id);
+      mergedConversations.push(remote);
+    }
+  }
+
+  mergedConversations.sort((a, b) => {
+    const cmp = compareConversationFreshness(b, a);
+    if (cmp !== 0) return cmp;
+    return String(a.conversation_id).localeCompare(String(b.conversation_id));
+  });
+
+  const parentMap = new Map();
+  for (const p of existingSyncIndexData?.parents || []) {
+    if (p?.conversation_id && p?.parent_id) parentMap.set(p.conversation_id, p.parent_id);
+  }
+  for (const p of localIndexData?.parents || []) {
+    if (p?.conversation_id && p?.parent_id) parentMap.set(p.conversation_id, p.parent_id);
+  }
+  const mergedParents = Array.from(parentMap.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([conversation_id, parent_id]) => ({ conversation_id, parent_id }));
+
+  return {
+    indexData: {
+      version: localIndexData?.version || existingSyncIndexData?.version || 2,
+      sourceHomeDir: localIndexData?.sourceHomeDir || existingSyncIndexData?.sourceHomeDir || os.homedir(),
+      exportedAt: localIndexData?.exportedAt || new Date().toISOString(),
+      conversations: mergedConversations,
+      parents: mergedParents
+    },
+    localOnlyIds,
+    localNewerIds,
+    equalIds,
+    remoteNewerIds,
+    remoteOnlyIds
+  };
+}
+
 function openSummariesDbReadSafe(dbPath) {
   const hasSidecar = fs.existsSync(`${dbPath}-wal`) || fs.existsSync(`${dbPath}-shm`);
   if (!hasSidecar) {
@@ -239,10 +400,17 @@ export function importAndMergeSummaries(dbPath, indexData, options = {}) {
   const sourceHome = indexData.sourceHomeDir || '';
   const customMappings = options.pathMappings || {};
   const transformRow = typeof options.transformRow === 'function' ? options.transformRow : null;
+  const decisions = options.decisions && typeof options.decisions === 'object' ? options.decisions : null;
+  if (decisions) {
+    if (!decisions.addedIds) decisions.addedIds = new Set();
+    if (!decisions.updatedIds) decisions.updatedIds = new Set();
+    if (!decisions.localNewerIds) decisions.localNewerIds = new Set();
+    if (!decisions.equalIds) decisions.equalIds = new Set();
+  }
 
   try {
     const existingRows = db
-      .prepare('SELECT conversation_id, title, last_modified_time, step_count, app_data_dir, source, project_id, raw_summary FROM conversation_summaries')
+      .prepare('SELECT conversation_id, title, last_modified_time, step_count, workspace_uris, app_data_dir, source, project_id, raw_summary FROM conversation_summaries')
       .all();
     const existingMap = new Map(existingRows.map(r => [r.conversation_id, r]));
 
@@ -296,17 +464,21 @@ export function importAndMergeSummaries(dbPath, indexData, options = {}) {
           const values = getColumnValues(conv, columns, adaptedWorkspaceUris, adaptedProjectId, colMetaMap);
           insertStmt.run(...values);
           added++;
+          if (decisions) decisions.addedIds.add(conv.conversation_id);
         } else {
           // Never overwrite an existing non-empty title with an empty string
           if (!conv.title && existing.title) {
             conv.title = existing.title;
           }
 
-          const remoteTime = parseTimestampMs(conv.last_modified_time);
-          const localTime = parseTimestampMs(existing.last_modified_time);
-          const isNewer =
-            (Number.isFinite(remoteTime) && (!Number.isFinite(localTime) || remoteTime > localTime)) ||
-            (conv.step_count || 0) > (existing.step_count || 0);
+          const cmp = compareConversationFreshness(conv, existing);
+          const isNewer = cmp > 0;
+          if (cmp < 0 && decisions) {
+            decisions.localNewerIds.add(conv.conversation_id);
+          } else if (cmp === 0 && decisions) {
+            decisions.equalIds.add(conv.conversation_id);
+          }
+
           const needsTitleHeal = !existing.title && Boolean(conv.title);
           const needsVisibilitySync = Boolean(options.syncVisibility) && (
             (existing.source === 'CORTEX_TRAJECTORY_SOURCE_CLI' && conv.source === '') ||
@@ -321,6 +493,7 @@ export function importAndMergeSummaries(dbPath, indexData, options = {}) {
             values.push(conv.conversation_id);
             updateStmt.run(...values);
             updated++;
+            if (decisions) decisions.updatedIds.add(conv.conversation_id);
           } else if (needsVisibilitySync) {
             const effectiveTitle = existing.title || conv.title || '';
             const baseRaw = existing.raw_summary || conv.raw_summary || null;

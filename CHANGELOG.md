@@ -5,6 +5,15 @@ All notable changes to `antigravity-sync` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (`MAJOR.MINOR.PATCH`).
 
+## [2.2.1] - 2026-11-16
+
+### Fixed
+- **Non-Destructive Union Merge on `push`**: `exportToSyncDir` now merges `conversations_index.json`, CLI `settings.json` (`trustedWorkspaces`), `last_conversations.json`, and `mcp_config.json` with existing sync repository state so unpulled remote conversations and settings from another PC are never overwritten.
+- **Timestamp-Driven Artifact Sync (Git `mtime` Fix)**: `push` and `pull` select `.db`, `brain/`, and `annotations/` files using conversation index timestamps (`last_modified_time` / `step_count`) and SHA-256 content hashes rather than Git checkout timestamps, while refusing to overwrite strictly newer conversation DBs.
+- **Smart Project Locator Path Propagation**: `importFromSyncDir` now resolves shared `config/projects/*.json` paths first and passes discovered project path mappings (including encoded `file:///c%3A/...` URIs) into Desktop and CLI conversation/brain imports.
+- **`metadata_guard.json` & CLI Cache Safety in `push`/`pull`**: `push` heals local metadata from `metadata_guard.json` before exporting and shares the guard ledger in `sync-data/`; `pull` prevents Desktop-project `.db` injection into `cli/conversations/`, keeps `app_data_dir: 'antigravity'` clean, and updates CLI `cache/conversation_metadata.json`.
+- **Git Conflict & Push Resilience + `status` Freshness Diff**: Clears stuck merge/rebase states, recovers from `sync-data` rebase/non-fast-forward conflicts cleanly by re-merging local data onto `origin`, pushes ahead offline commits even with clean working trees, and shows updated conversation counts in `agy-sync status`.
+
 ## [2.2.0] - 2026-11-16
 
 ### Added

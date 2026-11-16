@@ -3,6 +3,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import { loadConfig } from '../config.js';
 import { assertAntigravitySafe } from '../process.js';
 import { createSnapshot, importFromSyncDir } from '../storage.js';
+import { getDefaultGuardPath } from '../metadata_guard.js';
 import { isGitRepo, gitPull } from '../git.js';
 
 const VALID_TARGETS = new Set(['all', 'desktop', 'cli', 'config']);
@@ -32,9 +33,9 @@ export async function commandPull(options = {}) {
   if (isGitRepo(cfg.syncDir)) {
     console.log('📥 원격 저장소 최신 데이터 가져오는 중 (Git Pull)...');
     try {
-      const pullRes = gitPull(cfg.syncDir);
+      const pullRes = gitPull(cfg.syncDir, { recoverConflictByReset: true });
       if (pullRes.pulled) {
-        console.log('   ✅ Git Pull 성공');
+        console.log(pullRes.conflictRecovered ? '   ✅ Git Pull 완료 (충돌 항목을 원격 기준으로 정리함)' : '   ✅ Git Pull 성공');
       } else {
         console.log(`   ℹ️  Git 상태: ${pullRes.reason || 'up to date'}`);
       }
@@ -52,12 +53,14 @@ export async function commandPull(options = {}) {
     askFn = (q) => rl.question(q);
   }
 
+  const guardPath = cfg.guardPath || getDefaultGuardPath();
   let result;
   try {
     result = await importFromSyncDir(cfg, {
       ...options,
       target,
-      askFn
+      askFn,
+      guardPath
     });
   } finally {
     if (rl) rl.close();
