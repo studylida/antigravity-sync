@@ -113,8 +113,9 @@ try {
   const oldTime = new Date(Date.now() - 10000);
   fs.writeFileSync(path.join(cliDir, 'conversations', 'shared-1.db'), 'old-cli-db');
   fs.utimesSync(path.join(cliDir, 'conversations', 'shared-1.db'), oldTime, oldTime);
-  // Seed a poisoned Desktop-native .db duplicate in cliDir/conversations to verify automatic cleanup
+  // Seed a stale poisoned Desktop-native .db duplicate in cliDir/conversations to verify automatic cleanup
   fs.writeFileSync(path.join(cliDir, 'conversations', 'desk-1.db'), 'poisoned-copy');
+  fs.utimesSync(path.join(cliDir, 'conversations', 'desk-1.db'), oldTime, oldTime);
   fs.writeFileSync(path.join(desktopDir, 'conversations', 'shared-1.db'), 'updated-shared-from-desktop');
   const sharedDeskMod = exportSummaries(path.join(desktopDir, 'conversation_summaries.db'));
   const sharedDeskItem = sharedDeskMod.conversations.find(c => c.conversation_id === 'shared-1');
@@ -163,6 +164,37 @@ try {
   const deskMapped = exportSummaries(path.join(desktopDir, 'conversation_summaries.db'));
   assert.strictEqual(deskMapped.conversations.find(c => c.conversation_id === 'cli-1').project_id, 'my-proj-uuid');
   assert.strictEqual(deskMapped.conversations.find(c => c.conversation_id === 'cli-1').source, '');
+
+  // Round-trip: User adds new turns to bridged cli-1 in Desktop, then runs bridge -> CLI must keep default-cli-project and cli-1.db!
+  const deskModRound = new DatabaseSync(path.join(desktopDir, 'conversation_summaries.db'));
+  deskModRound.prepare("UPDATE conversation_summaries SET step_count = 99, last_modified_time = '2026-11-13T10:00:00Z' WHERE conversation_id = 'cli-1'").run();
+  deskModRound.close();
+  bridgeLocalClients({ desktopDir, cliDir, backupDir, projectsDir: mockProjectsDir }, { direction: 'both' });
+  const cliRound = exportSummaries(path.join(cliDir, 'conversation_summaries.db'));
+  assert.strictEqual(cliRound.conversations.find(c => c.conversation_id === 'cli-1').project_id, 'default-cli-project');
+  assert.strictEqual(cliRound.conversations.find(c => c.conversation_id === 'cli-1').step_count, 99);
+  assert(fs.existsSync(path.join(cliDir, 'conversations', 'cli-1.db')), 'CLI-native cli-1.db must survive round-trip');
+
+  // Imported Desktop conversation edited in CLI (newer in CLI):
+  // 1) --direction=desktop-to-cli must NOT delete newer CLI-modified desk-1.db
+  // 2) --direction=both must copy newer desk-1.db to Desktop, remove CLI duplicate, and reset CLI app_data_dir='antigravity'
+  const futureTime = new Date(Date.now() + 20000);
+  fs.writeFileSync(path.join(cliDir, 'conversations', 'desk-1.db'), 'cli-continued-turns');
+  fs.utimesSync(path.join(cliDir, 'conversations', 'desk-1.db'), futureTime, futureTime);
+  const cliImportMod = new DatabaseSync(path.join(cliDir, 'conversation_summaries.db'));
+  cliImportMod.prepare("UPDATE conversation_summaries SET app_data_dir = 'antigravity-cli', step_count = 88, last_modified_time = '2026-11-13T11:00:00Z' WHERE conversation_id = 'desk-1'").run();
+  cliImportMod.close();
+
+  const oneWayRes = bridgeLocalClients({ desktopDir, cliDir, backupDir, projectsDir: mockProjectsDir }, { direction: 'desktop-to-cli' });
+  assert.strictEqual(oneWayRes.cleanedCliDbCount, 0);
+  assert(fs.existsSync(path.join(cliDir, 'conversations', 'desk-1.db')), 'newer CLI-edited Desktop DB must not be deleted without cli-to-desktop');
+
+  const bothRes = bridgeLocalClients({ desktopDir, cliDir, backupDir, projectsDir: mockProjectsDir }, { direction: 'both' });
+  assert.strictEqual(bothRes.cleanedCliDbCount, 1);
+  assert(!fs.existsSync(path.join(cliDir, 'conversations', 'desk-1.db')));
+  assert.strictEqual(fs.readFileSync(path.join(desktopDir, 'conversations', 'desk-1.db'), 'utf8'), 'cli-continued-turns');
+  const cliAfterClean = exportSummaries(path.join(cliDir, 'conversation_summaries.db'));
+  assert.strictEqual(cliAfterClean.conversations.find(c => c.conversation_id === 'desk-1').app_data_dir, 'antigravity');
 
   // Verify identical desktopDir and cliDir are rejected
   assert.throws(

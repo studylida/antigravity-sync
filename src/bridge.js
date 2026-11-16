@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import { exportSummaries, importAndMergeSummaries } from './db.js';
 import { createSnapshot, copyConversationDbs, copyBrainDirs, copyAnnotationsFiles, removeSqliteSidecars } from './storage.js';
 import { syncClientProtoSummaries } from './proto_summaries.js';
@@ -136,22 +137,24 @@ function transformCliRowForDesktop(conv, existing, workspaceProjectMap = new Map
 }
 
 /**
- * Removes Desktop-native .db copies that older bridge versions placed in cliDir/conversations/.
- * Only deletes files that already exist in desktopDir/conversations/ and clearly belong to Desktop projects.
+ * Removes Desktop-native .db copies that older bridge versions (or CLI's ImportConversation)
+ * placed in cliDir/conversations/. Only deletes files that already exist in desktopDir/conversations/
+ * and belong to Desktop projects. When cliToDesktop did not run, newer CLI-modified DBs are spared.
  */
-function cleanupPoisonedCliConversationDbs(desktopDir, cliDir, desktopIndex, cliIndex) {
+function cleanupPoisonedCliConversationDbs(desktopDir, cliDir, desktopIndex, cliIndex, { cliToDesktopRan = true } = {}) {
   const deskConvsDir = path.join(desktopDir, 'conversations');
   const cliConvsDir = path.join(cliDir, 'conversations');
-  if (!fs.existsSync(deskConvsDir) || !fs.existsSync(cliConvsDir)) return 0;
+  if (!fs.existsSync(deskConvsDir) || !fs.existsSync(cliConvsDir)) return [];
 
   const deskMap = new Map((desktopIndex.conversations || []).map(c => [c.conversation_id, c]));
   const cliMap = new Map((cliIndex.conversations || []).map(c => [c.conversation_id, c]));
-  let cleaned = 0;
+  const cleanedIds = [];
 
   for (const file of fs.readdirSync(cliConvsDir)) {
     if (!file.endsWith('.db')) continue;
     const convId = file.slice(0, -3);
-    if (!fs.existsSync(path.join(deskConvsDir, file))) continue;
+    const deskFile = path.join(deskConvsDir, file);
+    if (!fs.existsSync(deskFile)) continue;
 
     const dRow = deskMap.get(convId);
     const cRow = cliMap.get(convId);
@@ -160,12 +163,43 @@ function cleanupPoisonedCliConversationDbs(desktopDir, cliDir, desktopIndex, cli
       (!cRow && dRow?.project_id === 'default-cli-project');
     if (projectId && !belongsToCli) {
       const targetDb = path.join(cliConvsDir, file);
+      if (!cliToDesktopRan) {
+        try {
+          if (fs.statSync(targetDb).mtimeMs > fs.statSync(deskFile).mtimeMs) {
+            continue;
+          }
+        } catch {
+          continue;
+        }
+      }
       removeSqliteSidecars(targetDb);
       fs.rmSync(targetDb, { force: true });
-      cleaned++;
+      cleanedIds.push(convId);
     }
   }
-  return cleaned;
+  return cleanedIds;
+}
+
+function resetCleanedDesktopAppDataDir(cliDbPath, cleanedIds) {
+  if (!cleanedIds.length || !fs.existsSync(cliDbPath)) return;
+  const db = new DatabaseSync(cliDbPath);
+  try {
+    const stmt = db.prepare(
+      "UPDATE conversation_summaries SET app_data_dir = 'antigravity' WHERE conversation_id = ? AND app_data_dir != 'antigravity'"
+    );
+    db.exec('BEGIN TRANSACTION');
+    for (const id of cleanedIds) {
+      stmt.run(id);
+    }
+    db.exec('COMMIT');
+    try {
+      db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+    } catch {}
+  } catch {
+    try { db.exec('ROLLBACK'); } catch {}
+  } finally {
+    db.close();
+  }
 }
 
 function transformDesktopRowForCli(conv, existing) {
@@ -173,6 +207,8 @@ function transformDesktopRowForCli(conv, existing) {
   if (existing) {
     return {
       ...conv,
+      // Preserve CLI-native default-cli-project identity across Desktop round-trips
+      project_id: existing.project_id === 'default-cli-project' ? 'default-cli-project' : conv.project_id,
       app_data_dir: isCliProject ? (existing.app_data_dir || 'antigravity-cli') : 'antigravity',
       source: existing.source ?? ''
     };
@@ -324,7 +360,13 @@ export function bridgeLocalClients(cfg, options = {}) {
   }
 
   // Clean Desktop-project duplicate .db files from cliDir AFTER cliToDesktop has rescued any newer turns
-  const cleanedCliDbCount = cleanupPoisonedCliConversationDbs(desktopDir, cliDir, initialDesktopIndex, initialCliIndex);
+  const cleanedIds = cleanupPoisonedCliConversationDbs(desktopDir, cliDir, initialDesktopIndex, initialCliIndex, {
+    cliToDesktopRan: direction === 'both' || direction === 'cli-to-desktop'
+  });
+  if (cleanedIds.length > 0) {
+    resetCleanedDesktopAppDataDir(cliDbPath, cleanedIds);
+  }
+  const cleanedCliDbCount = cleanedIds.length;
 
   let desktopToCli = null;
   if (direction === 'both' || direction === 'desktop-to-cli') {
@@ -333,7 +375,7 @@ export function bridgeLocalClients(cfg, options = {}) {
       includeParentsTable: true,
       transformRow: transformDesktopRowForCli
     });
-    if (mergeStats.added > 0 || mergeStats.updated > 0) {
+    if (mergeStats.added > 0 || mergeStats.updated > 0 || cleanedCliDbCount > 0) {
       syncClientProtoSummaries(cliDir, cliDbPath);
       syncCliMetadataCache(cliDir, cliDbPath);
     }
@@ -358,6 +400,9 @@ export function bridgeLocalClients(cfg, options = {}) {
       copyAnnotationsFiles(path.join(desktopDir, 'annotations'), path.join(cliDir, 'annotations'), true, targetIds);
     }
     desktopToCli = { mergeStats, copiedDbCount, copiedBrainCount };
+  } else if (cleanedCliDbCount > 0) {
+    syncClientProtoSummaries(cliDir, cliDbPath);
+    syncCliMetadataCache(cliDir, cliDbPath);
   }
 
   return {

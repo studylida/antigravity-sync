@@ -103,6 +103,13 @@ try {
   assert(strippedCliSource.includes(Buffer.from('Desktop Title', 'utf8')));
   assert(strippedCliSource.length < withCliSource.length || !strippedCliSource.equals(withCliSource));
 
+  // Verify patching field 17 sub 18 (project_id) inside a summary blob containing field 17
+  const sub18 = Buffer.concat([Buffer.from([0x92, 0x01, 19]), Buffer.from('default-cli-project', 'utf8')]);
+  const withField17 = Buffer.concat([strippedCliSource, Buffer.from([0x8a, 0x01, sub18.length]), sub18]);
+  const remappedProject = patchRawSummaryBlob(withField17, { source: '', title: 'Desktop Title', projectId: 'outside-of-project' });
+  assert(remappedProject.includes(Buffer.from('outside-of-project', 'utf8')));
+  assert(!remappedProject.includes(Buffer.from('default-cli-project', 'utf8')));
+
   console.log('All proto_summaries.js unit tests passed successfully!');
 } finally {
   if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true, force: true });

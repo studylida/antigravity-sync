@@ -208,7 +208,7 @@ function getColumnValues(row, columns, adaptedWorkspaceUris, adaptedProjectId, c
     if (c === 'workspace_uris') return adaptedWorkspaceUris;
     if (c === 'project_id') return adaptedProjectId;
     if (c === 'raw_summary' && row[c]) {
-      return patchRawSummaryBlob(row[c], { source: row.source, title: row.title });
+      return patchRawSummaryBlob(row[c], { source: row.source, title: row.title, projectId: adaptedProjectId });
     }
     if (row[c] !== undefined && row[c] !== null) {
       return row[c];
@@ -324,12 +324,12 @@ export function importAndMergeSummaries(dbPath, indexData, options = {}) {
           } else if (needsVisibilitySync) {
             const effectiveTitle = existing.title || conv.title || '';
             const baseRaw = existing.raw_summary || conv.raw_summary || null;
-            const patchedRaw = baseRaw ? patchRawSummaryBlob(baseRaw, { source: conv.source, title: effectiveTitle }) : null;
+            const patchedRaw = baseRaw ? patchRawSummaryBlob(baseRaw, { source: conv.source, title: effectiveTitle, projectId: adaptedProjectId }) : null;
             syncVisibilityStmt.run(effectiveTitle, conv.source, adaptedProjectId, patchedRaw, conv.conversation_id);
             updated++;
           } else if (needsTitleHeal) {
             const baseRaw = existing.raw_summary || conv.raw_summary || null;
-            const patchedRaw = baseRaw ? patchRawSummaryBlob(baseRaw, { source: existing.source, title: conv.title }) : null;
+            const patchedRaw = baseRaw ? patchRawSummaryBlob(baseRaw, { source: existing.source, title: conv.title, projectId: existing.project_id }) : null;
             healTitleStmt.run(conv.title, patchedRaw, conv.conversation_id);
             updated++;
           } else {

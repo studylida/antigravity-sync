@@ -77,10 +77,10 @@ function encodeBytesField(fn, buf) {
 }
 
 /**
- * Keeps raw_summary protobuf fields (field 15 title sub-message, field 20 source enum)
- * aligned with SQLite row metadata while preserving all unknown fields verbatim.
+ * Keeps raw_summary protobuf fields (field 15 title sub-message, field 17 sub-field 18 project_id,
+ * field 20 source enum) aligned with SQLite row metadata while preserving all unknown fields verbatim.
  */
-export function patchRawSummaryBlob(rawSummary, { source, title } = {}) {
+export function patchRawSummaryBlob(rawSummary, { source, title, projectId } = {}) {
   if (!rawSummary) return rawSummary;
   const buf = typeof rawSummary === 'string'
     ? Buffer.from(rawSummary, 'base64')
@@ -93,6 +93,7 @@ export function patchRawSummaryBlob(rawSummary, { source, title } = {}) {
   const out = [];
   let wroteTitle = false;
   let wroteSource = false;
+  let wroteProjectId = false;
 
   for (const field of fields) {
     if (field.fn === 15 && title !== undefined) {
@@ -105,6 +106,28 @@ export function patchRawSummaryBlob(rawSummary, { source, title } = {}) {
         out.push(encodeBytesField(15, Buffer.concat(inner)));
       }
       wroteTitle = true;
+      continue;
+    }
+
+    if (field.fn === 17 && field.wt === 2 && projectId !== undefined) {
+      const subFields = parseProtoFields(field.val);
+      const inner = [];
+      let subWroteProj = false;
+      for (const sf of subFields) {
+        if (sf.fn === 18) {
+          if (projectId) {
+            inner.push(encodeBytesField(18, Buffer.from(projectId, 'utf8')));
+          }
+          subWroteProj = true;
+        } else {
+          inner.push(sf.raw);
+        }
+      }
+      if (!subWroteProj && projectId) {
+        inner.push(encodeBytesField(18, Buffer.from(projectId, 'utf8')));
+      }
+      out.push(encodeBytesField(17, Buffer.concat(inner)));
+      wroteProjectId = true;
       continue;
     }
 
@@ -212,7 +235,7 @@ export function syncClientProtoSummaries(clientDir, summaryDbPath) {
   try {
     const hasTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = 'conversation_summaries'").get();
     if (!hasTable) return 0;
-    rows = db.prepare('SELECT conversation_id, title, source, raw_summary FROM conversation_summaries').all();
+    rows = db.prepare('SELECT conversation_id, title, source, project_id, raw_summary FROM conversation_summaries').all();
   } finally {
     db.close();
   }
@@ -228,7 +251,7 @@ export function syncClientProtoSummaries(clientDir, summaryDbPath) {
       if (row.raw_summary instanceof Uint8Array || Buffer.isBuffer(row.raw_summary)) {
         const buf = Buffer.from(row.raw_summary);
         if (buf.length > 0) {
-          summaries.set(id, patchRawSummaryBlob(buf, { source: row.source, title: row.title }));
+          summaries.set(id, patchRawSummaryBlob(buf, { source: row.source, title: row.title, projectId: row.project_id }));
           timestamps.set(id, nowSec);
         }
       }

@@ -5,6 +5,11 @@ All notable changes to `antigravity-sync` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (`MAJOR.MINOR.PATCH`).
 
+## [2.1.8] - 2026-11-16
+
+### Fixed
+- **Protobuf Field 17 Patch & CLI Round-Trip Protection**: Patch `project_id` inside existing `raw_summary` field 17 (`sub 18`), protect CLI round-trip sessions in `cliToDesktop`, and reset cleaned CLI `app_data_dir` entries back to `'antigravity'`.
+
 ## [2.1.7] - 2026-11-16
 
 ### Fixed
