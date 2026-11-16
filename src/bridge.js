@@ -293,7 +293,6 @@ export function bridgeLocalClients(cfg, options = {}) {
     ? exportSummaries(cliDbPath, home)
     : { version: 2, sourceHomeDir: home, exportedAt: new Date().toISOString(), conversations: [], parents: [] };
 
-  const cleanedCliDbCount = cleanupPoisonedCliConversationDbs(desktopDir, cliDir, initialDesktopIndex, initialCliIndex);
   const projectsDir = cfg.projectsDir || getDefaultProjectsDir();
   const workspaceProjectMap = buildWorkspaceProjectMap(projectsDir);
 
@@ -323,6 +322,9 @@ export function bridgeLocalClients(cfg, options = {}) {
     }
     cliToDesktop = { mergeStats, copiedDbCount, copiedBrainCount };
   }
+
+  // Clean Desktop-project duplicate .db files from cliDir AFTER cliToDesktop has rescued any newer turns
+  const cleanedCliDbCount = cleanupPoisonedCliConversationDbs(desktopDir, cliDir, initialDesktopIndex, initialCliIndex);
 
   let desktopToCli = null;
   if (direction === 'both' || direction === 'desktop-to-cli') {
