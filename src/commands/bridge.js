@@ -29,6 +29,9 @@ export async function commandBridge(options = {}) {
   if (res.snapshotPath) {
     console.log(`💾 자동 백업 스냅샷 생성: ${res.snapshotPath}`);
   }
+  if (res.guardHeal && (res.guardHeal.desktopHealed > 0 || res.guardHeal.cliHealed > 0)) {
+    console.log(`🛡️  메타데이터 장부 자동 치유: Desktop ${res.guardHeal.desktopHealed}건, CLI ${res.guardHeal.cliHealed}건 복구`);
+  }
   if (res.cleanedCliDbCount > 0) {
     console.log(`🧹 CLI 폴더 내 중복 Desktop 세션DB ${res.cleanedCliDbCount}개 정리 완료`);
   }

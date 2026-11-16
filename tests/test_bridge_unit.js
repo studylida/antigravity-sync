@@ -12,6 +12,7 @@ fs.mkdirSync(testDir, { recursive: true });
 const desktopDir = path.join(testDir, 'antigravity');
 const cliDir = path.join(testDir, 'antigravity-cli');
 const backupDir = path.join(testDir, 'backups');
+const guardPath = path.join(testDir, 'metadata_guard.json');
 
 function makeRow(id, title, appDataDir, source = '', stepCount = 5, time = '2026-11-13T05:00:00Z') {
   return {
@@ -77,12 +78,12 @@ try {
   assert.strictEqual(diff.newerInCli.length, 1);
   assert.strictEqual(diff.newerInDesktop.length, 0);
 
-  const dryRes = bridgeLocalClients({ desktopDir, cliDir, backupDir }, { direction: 'both', dryRun: true });
+  const dryRes = bridgeLocalClients({ desktopDir, cliDir, backupDir, guardPath }, { direction: 'both', dryRun: true });
   assert.strictEqual(dryRes.dryRun, true);
   assert.strictEqual(dryRes.snapshotPath, null);
 
   // 2. Execute bidirectional bridge
-  const res = bridgeLocalClients({ desktopDir, cliDir, backupDir }, { direction: 'both' });
+  const res = bridgeLocalClients({ desktopDir, cliDir, backupDir, guardPath }, { direction: 'both' });
   assert.strictEqual(res.dryRun, false);
   assert(fs.existsSync(res.snapshotPath), 'bridge must create backup snapshot');
   assert.strictEqual(res.cliToDesktop.mergeStats.added, 1);
@@ -122,7 +123,7 @@ try {
   sharedDeskItem.last_modified_time = '2026-11-13T08:00:00Z';
   sharedDeskItem.step_count = 25;
   importAndMergeSummaries(path.join(desktopDir, 'conversation_summaries.db'), sharedDeskMod);
-  const resSharedUpdate = bridgeLocalClients({ desktopDir, cliDir, backupDir }, { direction: 'desktop-to-cli' });
+  const resSharedUpdate = bridgeLocalClients({ desktopDir, cliDir, backupDir, guardPath }, { direction: 'desktop-to-cli' });
   assert.strictEqual(resSharedUpdate.cleanedCliDbCount, 1);
   assert(!fs.existsSync(path.join(cliDir, 'conversations', 'desk-1.db')), 'poisoned Desktop .db must be removed from cliDir');
   assert.strictEqual(resSharedUpdate.desktopToCli.copiedDbCount, 1);
@@ -137,16 +138,17 @@ try {
   const deskRawConn = new DatabaseSync(path.join(desktopDir, 'conversation_summaries.db'));
   deskRawConn.prepare("UPDATE conversation_summaries SET title = '', last_modified_time = '2026-11-13T09:00:00Z' WHERE conversation_id = 'desk-1'").run();
   deskRawConn.close();
-  bridgeLocalClients({ desktopDir, cliDir, backupDir }, { direction: 'desktop-to-cli' });
+  const noGuardYet = path.join(testDir, 'guard-empty-protect.json');
+  bridgeLocalClients({ desktopDir, cliDir, backupDir, guardPath: noGuardYet }, { direction: 'desktop-to-cli' });
   const cliFinal = exportSummaries(path.join(cliDir, 'conversation_summaries.db'));
   assert.strictEqual(cliFinal.conversations.find(c => c.conversation_id === 'desk-1').title, 'Protected CLI Title');
-  bridgeLocalClients({ desktopDir, cliDir, backupDir }, { direction: 'both' });
+  bridgeLocalClients({ desktopDir, cliDir, backupDir, guardPath: noGuardYet }, { direction: 'both' });
   const deskHealed = exportSummaries(path.join(desktopDir, 'conversation_summaries.db'));
   assert.strictEqual(deskHealed.conversations.find(c => c.conversation_id === 'desk-1').title, 'Protected CLI Title');
 
   // Verify missing Desktop .db for an indexed CLI conversation is repaired even when diff has 0 summary changes
   fs.rmSync(path.join(desktopDir, 'conversations', 'cli-1.db'), { force: true });
-  const healMissingDbRes = bridgeLocalClients({ desktopDir, cliDir, backupDir }, { direction: 'cli-to-desktop' });
+  const healMissingDbRes = bridgeLocalClients({ desktopDir, cliDir, backupDir, guardPath }, { direction: 'cli-to-desktop' });
   assert.strictEqual(healMissingDbRes.cliToDesktop.copiedDbCount, 1);
   assert(fs.existsSync(path.join(desktopDir, 'conversations', 'cli-1.db')));
 
@@ -160,7 +162,7 @@ try {
       projectResources: { resources: [{ gitFolder: { folderUri: 'file:///C:/git/my-app' } }] }
     })
   );
-  bridgeLocalClients({ desktopDir, cliDir, backupDir, projectsDir: mockProjectsDir }, { direction: 'cli-to-desktop' });
+  bridgeLocalClients({ desktopDir, cliDir, backupDir, guardPath, projectsDir: mockProjectsDir }, { direction: 'cli-to-desktop' });
   const deskMapped = exportSummaries(path.join(desktopDir, 'conversation_summaries.db'));
   assert.strictEqual(deskMapped.conversations.find(c => c.conversation_id === 'cli-1').project_id, 'my-proj-uuid');
   assert.strictEqual(deskMapped.conversations.find(c => c.conversation_id === 'cli-1').source, '');
@@ -169,7 +171,7 @@ try {
   const deskModRound = new DatabaseSync(path.join(desktopDir, 'conversation_summaries.db'));
   deskModRound.prepare("UPDATE conversation_summaries SET step_count = 99, last_modified_time = '2026-11-13T10:00:00Z' WHERE conversation_id = 'cli-1'").run();
   deskModRound.close();
-  bridgeLocalClients({ desktopDir, cliDir, backupDir, projectsDir: mockProjectsDir }, { direction: 'both' });
+  bridgeLocalClients({ desktopDir, cliDir, backupDir, guardPath, projectsDir: mockProjectsDir }, { direction: 'both' });
   const cliRound = exportSummaries(path.join(cliDir, 'conversation_summaries.db'));
   assert.strictEqual(cliRound.conversations.find(c => c.conversation_id === 'cli-1').project_id, 'default-cli-project');
   assert.strictEqual(cliRound.conversations.find(c => c.conversation_id === 'cli-1').step_count, 99);
@@ -185,11 +187,11 @@ try {
   cliImportMod.prepare("UPDATE conversation_summaries SET app_data_dir = 'antigravity-cli', step_count = 88, last_modified_time = '2026-11-13T11:00:00Z' WHERE conversation_id = 'desk-1'").run();
   cliImportMod.close();
 
-  const oneWayRes = bridgeLocalClients({ desktopDir, cliDir, backupDir, projectsDir: mockProjectsDir }, { direction: 'desktop-to-cli' });
+  const oneWayRes = bridgeLocalClients({ desktopDir, cliDir, backupDir, guardPath, projectsDir: mockProjectsDir }, { direction: 'desktop-to-cli' });
   assert.strictEqual(oneWayRes.cleanedCliDbCount, 0);
   assert(fs.existsSync(path.join(cliDir, 'conversations', 'desk-1.db')), 'newer CLI-edited Desktop DB must not be deleted without cli-to-desktop');
 
-  const bothRes = bridgeLocalClients({ desktopDir, cliDir, backupDir, projectsDir: mockProjectsDir }, { direction: 'both' });
+  const bothRes = bridgeLocalClients({ desktopDir, cliDir, backupDir, guardPath, projectsDir: mockProjectsDir }, { direction: 'both' });
   assert.strictEqual(bothRes.cleanedCliDbCount, 1);
   assert(!fs.existsSync(path.join(cliDir, 'conversations', 'desk-1.db')));
   assert.strictEqual(fs.readFileSync(path.join(desktopDir, 'conversations', 'desk-1.db'), 'utf8'), 'cli-continued-turns');
@@ -210,7 +212,7 @@ try {
   assert.strictEqual(diffAfter.newerInCli.length, 0);
   assert.strictEqual(diffAfter.newerInDesktop.length, 0);
 
-  const zeroRes = bridgeLocalClients({ desktopDir, cliDir, backupDir }, { direction: 'both' });
+  const zeroRes = bridgeLocalClients({ desktopDir, cliDir, backupDir, guardPath }, { direction: 'both' });
   assert.strictEqual(zeroRes.cliToDesktop.copiedDbCount, 0);
   assert.strictEqual(zeroRes.cliToDesktop.copiedBrainCount, 0);
   assert.strictEqual(zeroRes.desktopToCli.copiedDbCount, 0);

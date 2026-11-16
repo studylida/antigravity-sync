@@ -6,6 +6,7 @@ import { exportSummaries } from '../db.js';
 import { getBridgeDiff } from '../bridge.js';
 import { isGitRepo, getGitStatus } from '../git.js';
 import { listSnapshots } from '../storage.js';
+import { getWatchStatus } from '../watch.js';
 import { TOOL_VERSION } from '../version.js';
 
 function readIndexConversations(indexPath) {
@@ -43,6 +44,8 @@ export async function commandStatus() {
   // 1. Process status
   const procs = getRunningProcesses();
   console.log(`[앱 상태]       Desktop: ${procs.desktop ? '🟢 실행 중' : '⚪ 미실행'} | CLI (agy): ${procs.cli ? '🟢 실행 중' : '⚪ 미실행'}`);
+  const watchSt = getWatchStatus();
+  console.log(`[자동 감시]     Watch 데몬: ${watchSt.running ? `🟢 실행 중 (PID ${watchSt.pid})` : '⚪ 중지됨'} | 로그인 자동시작: ${watchSt.autoStartInstalled ? 'O' : 'X'}`);
 
   // 2. Local Desktop & CLI
   const desktopDb = path.join(cfg.desktopDir, 'conversation_summaries.db');

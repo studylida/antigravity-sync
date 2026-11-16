@@ -8,6 +8,7 @@ import { commandPull } from '../src/commands/pull.js';
 import { commandBridge } from '../src/commands/bridge.js';
 import { commandStatus } from '../src/commands/status.js';
 import { commandRestore } from '../src/commands/restore.js';
+import { commandWatch } from '../src/commands/watch.js';
 import { TOOL_VERSION } from '../src/version.js';
 
 const args = process.argv.slice(2);
@@ -29,6 +30,7 @@ Commands:
   pull [options]           Pull from sync repo and merge into local Desktop, CLI, and Config
   status                   Show process status, local bridge diff, and remote sync diff
   restore [snapshot]       Restore local state from an emergency backup snapshot
+  watch [options]          Auto-bridge when Desktop/CLI exit cleanly with guard auto-healing
   help                     Show this help message
 
 Options for push / pull:
@@ -44,6 +46,14 @@ Options for bridge:
 
 Options for restore:
   --force                  Bypass running Antigravity Desktop / CLI process check
+
+Options for watch:
+  --daemon                 Start background watcher daemon
+  --stop                   Stop running watcher daemon
+  --status                 Show watcher daemon & auto-start status
+  --install                Register Windows logon auto-start and start daemon
+  --uninstall              Remove Windows logon auto-start and stop daemon
+  --interval <ms>          Poll interval in milliseconds (default: 3000)
 
 Examples:
   agy-sync init
@@ -62,7 +72,13 @@ export function parseOptions(argList) {
     target: 'all',
     direction: 'both',
     dryRun: false,
-    autoYes: false
+    autoYes: false,
+    daemon: false,
+    stop: false,
+    status: false,
+    install: false,
+    uninstall: false,
+    interval: 3000
   };
   const positionals = [];
 
@@ -89,6 +105,24 @@ export function parseOptions(argList) {
       options.dryRun = true;
     } else if ((flag === '--auto-yes' || flag === '-y') && eqVal === null) {
       options.autoYes = true;
+    } else if (flag === '--daemon' && eqVal === null) {
+      options.daemon = true;
+    } else if (flag === '--stop' && eqVal === null) {
+      options.stop = true;
+    } else if (flag === '--status' && eqVal === null) {
+      options.status = true;
+    } else if (flag === '--install' && eqVal === null) {
+      options.install = true;
+    } else if (flag === '--uninstall' && eqVal === null) {
+      options.uninstall = true;
+    } else if (flag === '--interval') {
+      const { value, consumedNext } = consumeValue(flag, argList[i + 1], eqVal);
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed < 500) {
+        throw new Error(`유효하지 않은 --interval 값입니다: "${value}" (500 이상의 ms)`);
+      }
+      options.interval = parsed;
+      if (consumedNext) i++;
     } else if (flag === '-m' || flag === '--message') {
       const { value, consumedNext } = consumeValue(flag, argList[i + 1], eqVal);
       options.message = value;
@@ -143,6 +177,12 @@ async function main() {
         const { options, positionals } = parseOptions(args.slice(1));
         const snapshotName = positionals[0] || '';
         await commandRestore(snapshotName, options);
+        break;
+      }
+
+      case 'watch': {
+        const { options } = parseOptions(args.slice(1));
+        await commandWatch(options);
         break;
       }
 

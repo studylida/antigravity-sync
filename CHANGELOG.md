@@ -5,6 +5,12 @@ All notable changes to `antigravity-sync` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (`MAJOR.MINOR.PATCH`).
 
+## [2.2.0] - 2026-11-16
+
+### Added
+- **Background Auto-Bridge Watcher (`agy-sync watch`)**: Monitors Desktop (`Antigravity.exe`) and CLI (`agy.exe`) lifecycle and DB fingerprints, automatically running `bridge` once both clients have exited (`--daemon`, `--stop`, `--status`, `--interval`, plus `--install` / `--uninstall`).
+- **Self-Healing Metadata Guard Ledger (`~/.antigravity-sync/metadata_guard.json`)**: Records verified conversation titles, `desktopSource`, and `desktopProjectId`, automatically repairing overwritten titles, `source`, `project_id`, `annotations/*.pbtxt`, and proto caches before/during `bridge`.
+
 ## [2.1.8] - 2026-11-16
 
 ### Fixed

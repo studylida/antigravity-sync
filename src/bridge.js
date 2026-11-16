@@ -8,6 +8,7 @@ import { syncClientProtoSummaries } from './proto_summaries.js';
 import { fromFileUri } from './project_locator.js';
 import { expandPaths } from './path_utils.js';
 import { getDefaultProjectsDir } from './config.js';
+import { getDefaultGuardPath, healClientDbsFromGuard, recordMetadataGuard } from './metadata_guard.js';
 
 function parseTimestampMs(value) {
   if (!value) return NaN;
@@ -319,9 +320,27 @@ export function bridgeLocalClients(cfg, options = {}) {
     snapshotPath = createSnapshot(cfg, cfg.backupDir);
   }
 
-  // Read both initial indices before mutating either side so bidirectional bridge stays deterministic
   const desktopDbPath = path.join(desktopDir, 'conversation_summaries.db');
   const cliDbPath = path.join(cliDir, 'conversation_summaries.db');
+  const guardPath = options.guardPath || cfg.guardPath || getDefaultGuardPath();
+
+  // Auto-heal any titles/source/project_id overwritten by Desktop scanAndRefresh before bridging
+  const guardHeal = healClientDbsFromGuard({
+    desktopDir,
+    cliDir,
+    desktopDbPath,
+    cliDbPath,
+    guardPath
+  });
+  if (guardHeal.cliHealed > 0) {
+    syncCliMetadataCache(cliDir, cliDbPath);
+  }
+
+  const activeDiff = (guardHeal.desktopHealed > 0 || guardHeal.cliHealed > 0)
+    ? getBridgeDiff(desktopDir, cliDir)
+    : diff;
+
+  // Read both initial indices before mutating either side so bidirectional bridge stays deterministic
   const initialDesktopIndex = fs.existsSync(desktopDbPath)
     ? exportSummaries(desktopDbPath, home)
     : { version: 2, sourceHomeDir: home, exportedAt: new Date().toISOString(), conversations: [], parents: [] };
@@ -343,8 +362,8 @@ export function bridgeLocalClients(cfg, options = {}) {
       syncClientProtoSummaries(desktopDir, desktopDbPath);
     }
     const diffTargetIds = new Set([
-      ...diff.cliOnly.map(c => c.conversation_id),
-      ...diff.newerInCli.map(c => c.conversation_id)
+      ...activeDiff.cliOnly.map(c => c.conversation_id),
+      ...activeDiff.newerInCli.map(c => c.conversation_id)
     ]);
     const targetIds = collectCliArtifactIdsForDesktop(cliDir, desktopDir, initialCliIndex, diffTargetIds);
     const copiedDbCount = targetIds.size > 0
@@ -380,8 +399,8 @@ export function bridgeLocalClients(cfg, options = {}) {
       syncCliMetadataCache(cliDir, cliDbPath);
     }
     const targetIds = new Set([
-      ...diff.desktopOnly.map(c => c.conversation_id),
-      ...diff.newerInDesktop.map(c => c.conversation_id)
+      ...activeDiff.desktopOnly.map(c => c.conversation_id),
+      ...activeDiff.newerInDesktop.map(c => c.conversation_id)
     ]);
     // Do NOT place Desktop-native .db files into cliDir/conversations/:
     // Antigravity Desktop (agyhub) watches antigravity-cli/conversations/ as an additionalDir
@@ -405,11 +424,14 @@ export function bridgeLocalClients(cfg, options = {}) {
     syncCliMetadataCache(cliDir, cliDbPath);
   }
 
+  recordMetadataGuard({ desktopDbPath, cliDbPath, guardPath });
+
   return {
     dryRun: false,
     direction,
-    diff,
+    diff: activeDiff,
     snapshotPath,
+    guardHeal,
     cleanedCliDbCount,
     cliToDesktop,
     desktopToCli
