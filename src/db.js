@@ -242,7 +242,7 @@ export function importAndMergeSummaries(dbPath, indexData, options = {}) {
 
   try {
     const existingRows = db
-      .prepare('SELECT conversation_id, last_modified_time, step_count, app_data_dir, source FROM conversation_summaries')
+      .prepare('SELECT conversation_id, title, last_modified_time, step_count, app_data_dir, source, raw_summary FROM conversation_summaries')
       .all();
     const existingMap = new Map(existingRows.map(r => [r.conversation_id, r]));
 
@@ -278,9 +278,13 @@ export function importAndMergeSummaries(dbPath, indexData, options = {}) {
         ? db.prepare(`UPDATE conversation_summaries SET ${updateClauses} WHERE \`conversation_id\` = ?`)
         : null;
 
+      const healTitleStmt = db.prepare(
+        'UPDATE conversation_summaries SET `title` = ?, `raw_summary` = ? WHERE `conversation_id` = ?'
+      );
+
       for (const rawConv of conversations) {
         const existing = existingMap.get(rawConv.conversation_id);
-        const conv = transformRow ? transformRow({ ...rawConv }, existing) : rawConv;
+        const conv = transformRow ? transformRow({ ...rawConv }, existing) : { ...rawConv };
 
         const adaptedWorkspaceUris = expandPaths(conv.workspace_uris || '', targetHome, sourceHome, customMappings);
         const adaptedProjectId = expandPaths(conv.project_id || '', targetHome, sourceHome, customMappings);
@@ -290,16 +294,27 @@ export function importAndMergeSummaries(dbPath, indexData, options = {}) {
           insertStmt.run(...values);
           added++;
         } else {
+          // Never overwrite an existing non-empty title with an empty string
+          if (!conv.title && existing.title) {
+            conv.title = existing.title;
+          }
+
           const remoteTime = parseTimestampMs(conv.last_modified_time);
           const localTime = parseTimestampMs(existing.last_modified_time);
           const isNewer =
             (Number.isFinite(remoteTime) && (!Number.isFinite(localTime) || remoteTime > localTime)) ||
             (conv.step_count || 0) > (existing.step_count || 0);
+          const needsTitleHeal = !existing.title && Boolean(conv.title);
 
           if (isNewer && updateStmt) {
             const values = getColumnValues(conv, updateCols, adaptedWorkspaceUris, adaptedProjectId, colMetaMap);
             values.push(conv.conversation_id);
             updateStmt.run(...values);
+            updated++;
+          } else if (needsTitleHeal) {
+            const baseRaw = existing.raw_summary || conv.raw_summary || null;
+            const patchedRaw = baseRaw ? patchRawSummaryBlob(baseRaw, { source: existing.source, title: conv.title }) : null;
+            healTitleStmt.run(conv.title, patchedRaw, conv.conversation_id);
             updated++;
           } else {
             skipped++;

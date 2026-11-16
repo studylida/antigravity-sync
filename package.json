@@ -1,6 +1,6 @@
 {
   "name": "antigravity-sync",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "description": "Seamless bidirectional sync, backup, and Desktop-CLI bridge for Google Antigravity across multiple machines.",
   "type": "module",
   "main": "src/index.js",

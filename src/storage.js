@@ -24,7 +24,7 @@ function copyMatchingFiles(srcDir, destDir, predicate) {
   return count;
 }
 
-function removeSqliteSidecars(dbPath) {
+export function removeSqliteSidecars(dbPath) {
   for (const ext of ['-wal', '-shm']) {
     const sidecar = `${dbPath}${ext}`;
     if (fs.existsSync(sidecar)) {
@@ -272,22 +272,36 @@ export function restoreSnapshot(snapshotPath, cfg) {
  */
 const isAnnotationFile = (name) => name.endsWith('.pbtxt') || name.endsWith('.pb');
 
-function copyAnnotationsFiles(srcDir, destDir, onlyIfNewer = false) {
+export function copyAnnotationsFiles(srcDir, destDir, onlyIfNewer = false, onlyIds = null) {
   if (!fs.existsSync(srcDir)) return 0;
+  if (onlyIds && onlyIds.size === 0) return 0;
   fs.mkdirSync(destDir, { recursive: true });
   let count = 0;
   for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
     if (!entry.isFile() || !isAnnotationFile(entry.name)) continue;
+    const convId = entry.name.replace(/\.(pbtxt|pb)$/, '');
+    if (onlyIds && !onlyIds.has(convId)) continue;
     const srcPath = path.join(srcDir, entry.name);
     const destPath = path.join(destDir, entry.name);
-    if (onlyIfNewer && fs.existsSync(destPath)) {
-      const srcStat = fs.statSync(srcPath);
-      const destStat = fs.statSync(destPath);
-      if (srcStat.size === destStat.size && srcStat.mtimeMs <= destStat.mtimeMs) {
-        continue;
+    if (fs.existsSync(destPath)) {
+      if (entry.name.endsWith('.pbtxt')) {
+        try {
+          const destHasTitle = /title:\s*"[^"]+"/.test(fs.readFileSync(destPath, 'utf8'));
+          const srcHasTitle = /title:\s*"[^"]+"/.test(fs.readFileSync(srcPath, 'utf8'));
+          if (destHasTitle && !srcHasTitle) continue;
+        } catch {
+          // Ignore read errors and fall back to stat checks
+        }
       }
-      if (srcStat.mtimeMs < destStat.mtimeMs) {
-        continue;
+      if (onlyIfNewer) {
+        const srcStat = fs.statSync(srcPath);
+        const destStat = fs.statSync(destPath);
+        if (srcStat.size === destStat.size && srcStat.mtimeMs <= destStat.mtimeMs) {
+          continue;
+        }
+        if (srcStat.mtimeMs < destStat.mtimeMs) {
+          continue;
+        }
       }
     }
     fs.copyFileSync(srcPath, destPath);

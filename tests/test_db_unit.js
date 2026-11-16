@@ -229,6 +229,45 @@ try {
       const afterNullMerge = exportSummaries(emptyTestTarget);
       assert.strictEqual(afterNullMerge.conversations.find(c => c.conversation_id === 'c1').title, 'Valid Ts');
       assert.strictEqual(afterNullMerge.conversations.find(c => c.conversation_id === 'c2').title, 'Replaced By Valid');
+
+      // Empty title on newer incoming row must NOT overwrite existing non-empty title;
+      // and non-empty title on older row must heal existing empty title
+      const titleProtectRes = importAndMergeSummaries(emptyTestTarget, {
+        version: 2,
+        conversations: [
+          {
+            conversation_id: 'c1',
+            title: '',
+            workspace_uris: '[]',
+            last_modified_time: '2026-11-15T01:00:00Z',
+            last_user_input_time: '2026-11-15T01:00:00Z'
+          },
+          {
+            conversation_id: 'c3',
+            title: '',
+            workspace_uris: '[]',
+            last_modified_time: '2026-11-13T05:00:00Z',
+            last_user_input_time: '2026-11-13T05:00:00Z'
+          }
+        ]
+      });
+      assert.strictEqual(titleProtectRes.added, 1);
+      const healEmptyRes = importAndMergeSummaries(emptyTestTarget, {
+        version: 2,
+        conversations: [
+          {
+            conversation_id: 'c3',
+            title: 'Healed Older Title',
+            workspace_uris: '[]',
+            last_modified_time: '2026-11-13T01:00:00Z',
+            last_user_input_time: '2026-11-13T01:00:00Z'
+          }
+        ]
+      });
+      assert.strictEqual(healEmptyRes.updated, 1);
+      const afterProtect = exportSummaries(emptyTestTarget);
+      assert.strictEqual(afterProtect.conversations.find(c => c.conversation_id === 'c1').title, 'Valid Ts');
+      assert.strictEqual(afterProtect.conversations.find(c => c.conversation_id === 'c3').title, 'Healed Older Title');
     } finally {
       for (const ext of ['', '-wal', '-shm']) {
         if (fs.existsSync(emptyTestTarget + ext)) fs.unlinkSync(emptyTestTarget + ext);

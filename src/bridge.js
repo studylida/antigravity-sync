@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { exportSummaries, importAndMergeSummaries } from './db.js';
-import { createSnapshot, copyConversationDbs, copyBrainDirs } from './storage.js';
+import { createSnapshot, copyConversationDbs, copyBrainDirs, copyAnnotationsFiles, removeSqliteSidecars } from './storage.js';
 import { syncClientProtoSummaries } from './proto_summaries.js';
 
 function parseTimestampMs(value) {
@@ -15,7 +15,8 @@ function isRecordNewer(candidate, baseline) {
   const baseTime = parseTimestampMs(baseline.last_modified_time);
   return (
     (Number.isFinite(candTime) && Number.isFinite(baseTime) && candTime > baseTime) ||
-    (candidate.step_count || 0) > (baseline.step_count || 0)
+    (candidate.step_count || 0) > (baseline.step_count || 0) ||
+    (!baseline.title && Boolean(candidate.title))
   );
 }
 
@@ -70,12 +71,45 @@ export function getBridgeDiff(desktopDir, cliDir) {
 
 function transformCliRowForDesktop(conv, existing) {
   const next = { ...conv, app_data_dir: 'antigravity' };
-  if (!next.source && conv.app_data_dir === 'antigravity-cli') {
+  const isWorkspaceDesktopConv = Boolean(conv.project_id && conv.project_id !== 'default-cli-project');
+  if (!next.source && conv.app_data_dir === 'antigravity-cli' && !isWorkspaceDesktopConv) {
     next.source = 'CORTEX_TRAJECTORY_SOURCE_CLI';
-  } else if (!next.source && existing?.source) {
+  } else if (!next.source && existing?.source && !isWorkspaceDesktopConv) {
     next.source = existing.source;
   }
   return next;
+}
+
+/**
+ * Removes Desktop-native .db copies that older bridge versions placed in cliDir/conversations/.
+ * Only deletes files that already exist in desktopDir/conversations/ and clearly belong to Desktop projects.
+ */
+function cleanupPoisonedCliConversationDbs(desktopDir, cliDir, desktopIndex, cliIndex) {
+  const deskConvsDir = path.join(desktopDir, 'conversations');
+  const cliConvsDir = path.join(cliDir, 'conversations');
+  if (!fs.existsSync(deskConvsDir) || !fs.existsSync(cliConvsDir)) return 0;
+
+  const deskMap = new Map((desktopIndex.conversations || []).map(c => [c.conversation_id, c]));
+  const cliMap = new Map((cliIndex.conversations || []).map(c => [c.conversation_id, c]));
+  let cleaned = 0;
+
+  for (const file of fs.readdirSync(cliConvsDir)) {
+    if (!file.endsWith('.db')) continue;
+    const convId = file.slice(0, -3);
+    if (!fs.existsSync(path.join(deskConvsDir, file))) continue;
+
+    const dRow = deskMap.get(convId);
+    const cRow = cliMap.get(convId);
+    const projectId = dRow?.project_id || cRow?.project_id || '';
+    const belongsToCli = dRow?.project_id === 'default-cli-project' || cRow?.project_id === 'default-cli-project';
+    if (projectId && !belongsToCli) {
+      const targetDb = path.join(cliConvsDir, file);
+      removeSqliteSidecars(targetDb);
+      fs.rmSync(targetDb, { force: true });
+      cleaned++;
+    }
+  }
+  return cleaned;
 }
 
 function transformDesktopRowForCli(conv, existing) {
@@ -144,6 +178,8 @@ export function bridgeLocalClients(cfg, options = {}) {
     ? exportSummaries(cliDbPath, home)
     : { version: 2, sourceHomeDir: home, exportedAt: new Date().toISOString(), conversations: [], parents: [] };
 
+  const cleanedCliDbCount = cleanupPoisonedCliConversationDbs(desktopDir, cliDir, initialDesktopIndex, initialCliIndex);
+
   let cliToDesktop = null;
   if (direction === 'both' || direction === 'cli-to-desktop') {
     const mergeStats = importAndMergeSummaries(desktopDbPath, initialCliIndex, {
@@ -163,6 +199,9 @@ export function bridgeLocalClients(cfg, options = {}) {
     const copiedBrainCount = targetIds.size > 0
       ? copyBrainDirs(path.join(cliDir, 'brain'), path.join(desktopDir, 'brain'), null, targetIds)
       : 0;
+    if (targetIds.size > 0) {
+      copyAnnotationsFiles(path.join(cliDir, 'annotations'), path.join(desktopDir, 'annotations'), true, targetIds);
+    }
     cliToDesktop = { mergeStats, copiedDbCount, copiedBrainCount };
   }
 
@@ -193,6 +232,9 @@ export function bridgeLocalClients(cfg, options = {}) {
     const copiedBrainCount = targetIds.size > 0
       ? copyBrainDirs(path.join(desktopDir, 'brain'), path.join(cliDir, 'brain'), null, targetIds)
       : 0;
+    if (targetIds.size > 0) {
+      copyAnnotationsFiles(path.join(desktopDir, 'annotations'), path.join(cliDir, 'annotations'), true, targetIds);
+    }
     desktopToCli = { mergeStats, copiedDbCount, copiedBrainCount };
   }
 
@@ -201,6 +243,7 @@ export function bridgeLocalClients(cfg, options = {}) {
     direction,
     diff,
     snapshotPath,
+    cleanedCliDbCount,
     cliToDesktop,
     desktopToCli
   };

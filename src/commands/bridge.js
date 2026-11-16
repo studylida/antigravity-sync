@@ -29,6 +29,9 @@ export async function commandBridge(options = {}) {
   if (res.snapshotPath) {
     console.log(`💾 자동 백업 스냅샷 생성: ${res.snapshotPath}`);
   }
+  if (res.cleanedCliDbCount > 0) {
+    console.log(`🧹 CLI 폴더 내 중복 Desktop 세션DB ${res.cleanedCliDbCount}개 정리 완료`);
+  }
 
   if (res.cliToDesktop) {
     const m = res.cliToDesktop.mergeStats;

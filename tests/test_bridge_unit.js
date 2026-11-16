@@ -1,5 +1,6 @@
 import { getBridgeDiff, bridgeLocalClients } from '../src/bridge.js';
 import { exportSummaries, importAndMergeSummaries } from '../src/db.js';
+import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert';
@@ -111,6 +112,8 @@ try {
   const oldTime = new Date(Date.now() - 10000);
   fs.writeFileSync(path.join(cliDir, 'conversations', 'shared-1.db'), 'old-cli-db');
   fs.utimesSync(path.join(cliDir, 'conversations', 'shared-1.db'), oldTime, oldTime);
+  // Seed a poisoned Desktop-native .db duplicate in cliDir/conversations to verify automatic cleanup
+  fs.writeFileSync(path.join(cliDir, 'conversations', 'desk-1.db'), 'poisoned-copy');
   fs.writeFileSync(path.join(desktopDir, 'conversations', 'shared-1.db'), 'updated-shared-from-desktop');
   const sharedDeskMod = exportSummaries(path.join(desktopDir, 'conversation_summaries.db'));
   const sharedDeskItem = sharedDeskMod.conversations.find(c => c.conversation_id === 'shared-1');
@@ -118,8 +121,26 @@ try {
   sharedDeskItem.step_count = 25;
   importAndMergeSummaries(path.join(desktopDir, 'conversation_summaries.db'), sharedDeskMod);
   const resSharedUpdate = bridgeLocalClients({ desktopDir, cliDir, backupDir }, { direction: 'desktop-to-cli' });
+  assert.strictEqual(resSharedUpdate.cleanedCliDbCount, 1);
+  assert(!fs.existsSync(path.join(cliDir, 'conversations', 'desk-1.db')), 'poisoned Desktop .db must be removed from cliDir');
   assert.strictEqual(resSharedUpdate.desktopToCli.copiedDbCount, 1);
   assert.strictEqual(fs.readFileSync(path.join(cliDir, 'conversations', 'shared-1.db'), 'utf8'), 'updated-shared-from-desktop');
+
+  // Verify newer empty-title Desktop row never wipes existing CLI title, and both-way bridge heals Desktop
+  const cliMod = exportSummaries(path.join(cliDir, 'conversation_summaries.db'));
+  const cliDeskEntry = cliMod.conversations.find(c => c.conversation_id === 'desk-1');
+  cliDeskEntry.title = 'Protected CLI Title';
+  cliDeskEntry.last_modified_time = '2026-11-13T08:30:00Z';
+  importAndMergeSummaries(path.join(cliDir, 'conversation_summaries.db'), cliMod, { includeParentsTable: true });
+  const deskRawConn = new DatabaseSync(path.join(desktopDir, 'conversation_summaries.db'));
+  deskRawConn.prepare("UPDATE conversation_summaries SET title = '', last_modified_time = '2026-11-13T09:00:00Z' WHERE conversation_id = 'desk-1'").run();
+  deskRawConn.close();
+  bridgeLocalClients({ desktopDir, cliDir, backupDir }, { direction: 'desktop-to-cli' });
+  const cliFinal = exportSummaries(path.join(cliDir, 'conversation_summaries.db'));
+  assert.strictEqual(cliFinal.conversations.find(c => c.conversation_id === 'desk-1').title, 'Protected CLI Title');
+  bridgeLocalClients({ desktopDir, cliDir, backupDir }, { direction: 'both' });
+  const deskHealed = exportSummaries(path.join(desktopDir, 'conversation_summaries.db'));
+  assert.strictEqual(deskHealed.conversations.find(c => c.conversation_id === 'desk-1').title, 'Protected CLI Title');
 
   // Verify identical desktopDir and cliDir are rejected
   assert.throws(
