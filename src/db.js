@@ -242,7 +242,7 @@ export function importAndMergeSummaries(dbPath, indexData, options = {}) {
 
   try {
     const existingRows = db
-      .prepare('SELECT conversation_id, title, last_modified_time, step_count, app_data_dir, source, raw_summary FROM conversation_summaries')
+      .prepare('SELECT conversation_id, title, last_modified_time, step_count, app_data_dir, source, project_id, raw_summary FROM conversation_summaries')
       .all();
     const existingMap = new Map(existingRows.map(r => [r.conversation_id, r]));
 
@@ -281,6 +281,9 @@ export function importAndMergeSummaries(dbPath, indexData, options = {}) {
       const healTitleStmt = db.prepare(
         'UPDATE conversation_summaries SET `title` = ?, `raw_summary` = ? WHERE `conversation_id` = ?'
       );
+      const syncVisibilityStmt = db.prepare(
+        'UPDATE conversation_summaries SET `title` = ?, `source` = ?, `project_id` = ?, `raw_summary` = ? WHERE `conversation_id` = ?'
+      );
 
       for (const rawConv of conversations) {
         const existing = existingMap.get(rawConv.conversation_id);
@@ -305,11 +308,24 @@ export function importAndMergeSummaries(dbPath, indexData, options = {}) {
             (Number.isFinite(remoteTime) && (!Number.isFinite(localTime) || remoteTime > localTime)) ||
             (conv.step_count || 0) > (existing.step_count || 0);
           const needsTitleHeal = !existing.title && Boolean(conv.title);
+          const needsVisibilitySync = Boolean(options.syncVisibility) && (
+            (existing.source === 'CORTEX_TRAJECTORY_SOURCE_CLI' && conv.source === '') ||
+            (adaptedProjectId && adaptedProjectId !== 'default-cli-project' && (
+              existing.project_id === 'default-cli-project' ||
+              (existing.project_id === 'outside-of-project' && adaptedProjectId !== 'outside-of-project')
+            ))
+          );
 
           if (isNewer && updateStmt) {
             const values = getColumnValues(conv, updateCols, adaptedWorkspaceUris, adaptedProjectId, colMetaMap);
             values.push(conv.conversation_id);
             updateStmt.run(...values);
+            updated++;
+          } else if (needsVisibilitySync) {
+            const effectiveTitle = existing.title || conv.title || '';
+            const baseRaw = existing.raw_summary || conv.raw_summary || null;
+            const patchedRaw = baseRaw ? patchRawSummaryBlob(baseRaw, { source: conv.source, title: effectiveTitle }) : null;
+            syncVisibilityStmt.run(effectiveTitle, conv.source, adaptedProjectId, patchedRaw, conv.conversation_id);
             updated++;
           } else if (needsTitleHeal) {
             const baseRaw = existing.raw_summary || conv.raw_summary || null;

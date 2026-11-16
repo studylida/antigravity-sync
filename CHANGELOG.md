@@ -5,6 +5,11 @@ All notable changes to `antigravity-sync` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (`MAJOR.MINOR.PATCH`).
 
+## [2.1.6] - 2026-11-16
+
+### Fixed
+- **Desktop Sidebar Visibility Mapping**: Map bridged CLI conversations (`source: ''`) to matching Desktop workspace project UUIDs or `outside-of-project` (Playground) so they appear in the Desktop sidebar.
+
 ## [2.1.5] - 2026-11-16
 
 ### Fixed

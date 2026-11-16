@@ -4,6 +4,9 @@ import os from 'node:os';
 import { exportSummaries, importAndMergeSummaries } from './db.js';
 import { createSnapshot, copyConversationDbs, copyBrainDirs, copyAnnotationsFiles, removeSqliteSidecars } from './storage.js';
 import { syncClientProtoSummaries } from './proto_summaries.js';
+import { fromFileUri } from './project_locator.js';
+import { expandPaths } from './path_utils.js';
+import { getDefaultProjectsDir } from './config.js';
 
 function parseTimestampMs(value) {
   if (!value) return NaN;
@@ -69,15 +72,67 @@ export function getBridgeDiff(desktopDir, cliDir) {
   };
 }
 
-function transformCliRowForDesktop(conv, existing) {
-  const next = { ...conv, app_data_dir: 'antigravity' };
-  const isWorkspaceDesktopConv = Boolean(conv.project_id && conv.project_id !== 'default-cli-project');
-  if (!next.source && conv.app_data_dir === 'antigravity-cli' && !isWorkspaceDesktopConv) {
-    next.source = 'CORTEX_TRAJECTORY_SOURCE_CLI';
-  } else if (!next.source && existing?.source && !isWorkspaceDesktopConv) {
-    next.source = existing.source;
+function buildWorkspaceProjectMap(projectsDir) {
+  const map = new Map();
+  if (!projectsDir || !fs.existsSync(projectsDir)) return map;
+  for (const file of fs.readdirSync(projectsDir)) {
+    if (!file.endsWith('.json')) continue;
+    try {
+      const proj = JSON.parse(fs.readFileSync(path.join(projectsDir, file), 'utf8'));
+      const projId = proj?.id || file.slice(0, -5);
+      if (!projId || projId === 'default-cli-project') continue;
+      for (const res of proj?.projectResources?.resources || []) {
+        const uri = res?.gitFolder?.folderUri || res?.folderUri || res?.workspaceUri;
+        const fsPath = uri ? fromFileUri(uri) : '';
+        if (fsPath) {
+          map.set(path.resolve(fsPath).toLowerCase(), projId);
+        }
+      }
+    } catch {
+      // Ignore malformed project file
+    }
   }
-  return next;
+  return map;
+}
+
+function resolveDesktopProjectId(conv, existing, workspaceProjectMap, homeDir) {
+  let uris = [];
+  if (typeof conv.workspace_uris === 'string' && conv.workspace_uris.trim()) {
+    const expanded = expandPaths(conv.workspace_uris, homeDir);
+    try {
+      const parsed = JSON.parse(expanded);
+      if (Array.isArray(parsed)) uris = parsed;
+    } catch {
+      uris = [expanded];
+    }
+  } else if (Array.isArray(conv.workspace_uris)) {
+    uris = conv.workspace_uris.map(u => expandPaths(String(u), homeDir));
+  }
+
+  for (const uri of uris) {
+    const fsPath = uri ? fromFileUri(String(uri)) : '';
+    if (!fsPath) continue;
+    const matched = workspaceProjectMap?.get(path.resolve(fsPath).toLowerCase());
+    if (matched) return matched;
+  }
+
+  if (existing?.project_id && existing.project_id !== 'default-cli-project') {
+    return existing.project_id;
+  }
+  if (conv.project_id && conv.project_id !== 'default-cli-project') {
+    return conv.project_id;
+  }
+  return 'outside-of-project';
+}
+
+function transformCliRowForDesktop(conv, existing, workspaceProjectMap = new Map(), homeDir = os.homedir()) {
+  return {
+    ...conv,
+    app_data_dir: 'antigravity',
+    // Clear CLI source tag and map project_id so Antigravity Desktop displays bridged CLI conversations in its sidebar
+    source: '',
+    project_id: resolveDesktopProjectId(conv, existing, workspaceProjectMap, homeDir)
+  };
 }
 
 /**
@@ -100,8 +155,9 @@ function cleanupPoisonedCliConversationDbs(desktopDir, cliDir, desktopIndex, cli
 
     const dRow = deskMap.get(convId);
     const cRow = cliMap.get(convId);
-    const projectId = dRow?.project_id || cRow?.project_id || '';
-    const belongsToCli = dRow?.project_id === 'default-cli-project' || cRow?.project_id === 'default-cli-project';
+    const projectId = cRow?.project_id || dRow?.project_id || '';
+    const belongsToCli = cRow?.project_id === 'default-cli-project' ||
+      (!cRow && dRow?.project_id === 'default-cli-project');
     if (projectId && !belongsToCli) {
       const targetDb = path.join(cliConvsDir, file);
       removeSqliteSidecars(targetDb);
@@ -238,12 +294,15 @@ export function bridgeLocalClients(cfg, options = {}) {
     : { version: 2, sourceHomeDir: home, exportedAt: new Date().toISOString(), conversations: [], parents: [] };
 
   const cleanedCliDbCount = cleanupPoisonedCliConversationDbs(desktopDir, cliDir, initialDesktopIndex, initialCliIndex);
+  const projectsDir = cfg.projectsDir || getDefaultProjectsDir();
+  const workspaceProjectMap = buildWorkspaceProjectMap(projectsDir);
 
   let cliToDesktop = null;
   if (direction === 'both' || direction === 'cli-to-desktop') {
     const mergeStats = importAndMergeSummaries(desktopDbPath, initialCliIndex, {
       targetHome: home,
-      transformRow: transformCliRowForDesktop
+      syncVisibility: true,
+      transformRow: (conv, existing) => transformCliRowForDesktop(conv, existing, workspaceProjectMap, home)
     });
     if (mergeStats.added > 0 || mergeStats.updated > 0) {
       syncClientProtoSummaries(desktopDir, desktopDbPath);

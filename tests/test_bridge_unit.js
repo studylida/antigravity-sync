@@ -89,11 +89,12 @@ try {
   assert.strictEqual(res.cliToDesktop.mergeStats.updated, 1);
   assert.strictEqual(res.desktopToCli.mergeStats.added, 1);
 
-  // Verify Desktop has cli-1 with Desktop conventions
+  // Verify Desktop has cli-1 with Desktop visibility (empty source + mapped project_id)
   const deskAfter = exportSummaries(path.join(desktopDir, 'conversation_summaries.db'));
   const deskCliRow = deskAfter.conversations.find(c => c.conversation_id === 'cli-1');
   assert.strictEqual(deskCliRow.app_data_dir, 'antigravity');
-  assert.strictEqual(deskCliRow.source, 'CORTEX_TRAJECTORY_SOURCE_CLI');
+  assert.strictEqual(deskCliRow.source, '');
+  assert.strictEqual(deskCliRow.project_id, 'outside-of-project');
   assert(fs.existsSync(path.join(desktopDir, 'conversations', 'cli-1.db')));
   assert(fs.existsSync(path.join(desktopDir, 'brain', 'cli-1', 'plan.md')));
 
@@ -147,6 +148,21 @@ try {
   const healMissingDbRes = bridgeLocalClients({ desktopDir, cliDir, backupDir }, { direction: 'cli-to-desktop' });
   assert.strictEqual(healMissingDbRes.cliToDesktop.copiedDbCount, 1);
   assert(fs.existsSync(path.join(desktopDir, 'conversations', 'cli-1.db')));
+
+  // Verify CLI workspace_uris maps to matching Desktop project UUID from projectsDir
+  const mockProjectsDir = path.join(testDir, 'projects');
+  fs.mkdirSync(mockProjectsDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(mockProjectsDir, 'my-proj-uuid.json'),
+    JSON.stringify({
+      id: 'my-proj-uuid',
+      projectResources: { resources: [{ gitFolder: { folderUri: 'file:///C:/git/my-app' } }] }
+    })
+  );
+  bridgeLocalClients({ desktopDir, cliDir, backupDir, projectsDir: mockProjectsDir }, { direction: 'cli-to-desktop' });
+  const deskMapped = exportSummaries(path.join(desktopDir, 'conversation_summaries.db'));
+  assert.strictEqual(deskMapped.conversations.find(c => c.conversation_id === 'cli-1').project_id, 'my-proj-uuid');
+  assert.strictEqual(deskMapped.conversations.find(c => c.conversation_id === 'cli-1').source, '');
 
   // Verify identical desktopDir and cliDir are rejected
   assert.throws(
